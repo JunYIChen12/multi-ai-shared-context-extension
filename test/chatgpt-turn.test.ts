@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { MAX_MESSAGE_BODY_CHARS } from "../src/core/types.js";
 import type { ChatGptEvidencePort, PageEvidence, StructuralTurn } from "../src/extension/chatgpt-evidence.js";
 import { parseSessionUrl, relateSession } from "../src/extension/chatgpt-evidence.js";
-import { abortableDelay, runChatGptTurn, type ChatGptTurnTiming } from "../src/extension/chatgpt-turn.js";
+import { abortableDelay, createSendLedger, runChatGptTurn, type ChatGptTurnTiming } from "../src/extension/chatgpt-turn.js";
 
 const timing: ChatGptTurnTiming = {
   polls: 6,
@@ -464,7 +464,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     assert.equal(missed.ok, false);
     assert.equal(JSON.stringify(missed).includes("外来"), false);
 
-    const ledger = { unmatched: 1 };
+    const ledger = { unmatched: 1, pendingConversationId: null };
     const late = evidence({
       turns: [
         turn({ id: "u-late", role: "user", order: 0 }),
@@ -475,7 +475,63 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     const lateResult = await runChatGptTurn(lateScript.page, "第二问", lateScript.timing, new AbortController().signal, ledger);
     assert.equal(lateResult.ok, false);
     if (!lateResult.ok) assert.equal(lateResult.code, "unknown");
+    assert.equal(lateScript.writes(), 0);
+    assert.equal(lateScript.submits(), 0);
     assert.equal(JSON.stringify(lateResult).includes("迟到"), false);
+  });
+
+  it("取消后的未匹配发送不会在同一会话重发，切换到独立会话才恢复", async () => {
+    const ledger = createSendLedger();
+    const controller = new AbortController();
+    const onA = evidence({ url: "https://chatgpt.com/c/A" });
+    const first = scripted([onA, onA], {
+      wait({ submitted }) {
+        if (submitted) controller.abort();
+      },
+    });
+    const cancelled = await runChatGptTurn(first.page, "第一问", first.timing, controller.signal, ledger);
+    assert.equal(cancelled.ok, false);
+    if (!cancelled.ok) assert.equal(cancelled.code, "cancelled");
+    assert.equal(first.submits(), 1);
+
+    const late = evidence({
+      url: "https://chatgpt.com/c/A",
+      turns: [
+        turn({ id: "u-late", role: "user", order: 0 }),
+        turn({ id: "a-late", role: "assistant", order: 1, text: "LATE", endControl: readyEnd }),
+      ],
+    });
+    const sameConversation = scripted([late, late, late]);
+    const blocked = await runChatGptTurn(sameConversation.page, "第二问", sameConversation.timing, new AbortController().signal, ledger);
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.equal(blocked.code, "unknown");
+    assert.equal(sameConversation.writes(), 0);
+    assert.equal(sameConversation.submits(), 0);
+    assert.equal(JSON.stringify(blocked).includes("LATE"), false);
+
+    const onB = evidence({ url: "https://chatgpt.com/c/B" });
+    const done = evidence({
+      url: "https://chatgpt.com/c/B",
+      turns: [
+        turn({ id: "u-b", role: "user", order: 0 }),
+        turn({ id: "a-b", role: "assistant", order: 1, text: "B", endControl: readyEnd }),
+      ],
+    });
+    const separateConversation = scripted([onB, onB, done, done, done]);
+    const recovered = await runChatGptTurn(separateConversation.page, "新会话问题", separateConversation.timing, new AbortController().signal, ledger);
+    assert.deepEqual(recovered, { ok: true, body: "B" });
+    assert.equal(separateConversation.submits(), 1);
+    assert.equal(ledger.unmatched, 0);
+  });
+
+  it("输入后、提交前换会话时不得把问题发送到新会话", async () => {
+    const onA = evidence({ url: "https://chatgpt.com/c/A" });
+    const onB = evidence({ url: "https://chatgpt.com/c/B" });
+    const script = scripted([onA, onB, onB]);
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "navigation");
+    assert.equal(script.submits(), 0);
   });
 
   it("钉住 /c/A 之后再进入 B 会隔离", async () => {

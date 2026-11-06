@@ -176,14 +176,11 @@ function readPageError(root: EvidenceQueryRoot): ReadState<"none" | "present"> {
 }
 
 function readTurnBody(node: EvidenceQueryElement): string {
-  let text = node.textContent ?? "";
-  for (const button of asArray(node.querySelectorAll("button"))) {
-    const label = button.textContent ?? "";
-    if (label) {
-      text = text.replace(label, "");
-    }
+  const copy = (node as unknown as Element).cloneNode(true) as Element;
+  for (const button of asArray(copy.querySelectorAll("button"))) {
+    button.textContent = "";
   }
-  return text;
+  return copy.textContent ?? "";
 }
 
 function canEdit(element: EvidenceQueryElement): boolean {

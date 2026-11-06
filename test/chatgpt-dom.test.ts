@@ -53,6 +53,7 @@ class OfflineNode implements EvidenceQueryRoot, EvidenceQueryElement {
 
   set textContent(value: string | null) {
     this.body = value ?? "";
+    this.children = [];
   }
 
   getAttribute(name: string): string | null {
@@ -69,6 +70,12 @@ class OfflineNode implements EvidenceQueryRoot, EvidenceQueryElement {
 
   querySelectorAll(selector: string): OfflineNode[] {
     return query(this, selector);
+  }
+
+  cloneNode(deep = false): OfflineNode {
+    const clone = new OfflineNode(this.tag, { ...this.attrs }, this.body);
+    clone.children = deep ? this.children.map((child) => child.cloneNode(true)) : [];
+    return clone;
   }
 
   click(): void {
@@ -114,6 +121,23 @@ function offlinePage(): { root: OfflineNode; prompt: OfflineNode; send: OfflineN
 }
 
 describe("离线 DOM 模拟（不是 ChatGPT 页面）", () => {
+  it("正文里与按钮相同的 Copy 和复制文案不会被删掉", () => {
+    const root = new OfflineNode("div");
+    const body = "正文包含 Copy 和复制";
+    const assistant = new OfflineNode(
+      "div",
+      { "data-message-author-role": "assistant", "data-message-id": "a1" },
+      body,
+    );
+    assistant.children.push(new OfflineNode("button", {}, "Copy"));
+    assistant.children.push(new OfflineNode("button", {}, "复制"));
+    root.children.push(assistant);
+
+    const read = readPageEvidence(root, "https://chatgpt.com/", ["a1"]);
+    assert.equal(read.turns.state, "ready");
+    if (read.turns.state === "ready") assert.equal(read.turns.value[0]?.text, body);
+  });
+
   it("发送之后才出现的结构也不会被失配的 Stop 或错误选择器判成成功", async () => {
     const { root, send } = offlinePage();
     const old = new OfflineNode("div", { "data-message-author-role": "assistant", "data-message-id": "old" }, "OLD_SECRET");

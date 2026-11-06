@@ -5,6 +5,7 @@ import {
   assessPoll,
   deadlineResult,
   memoryFromBaseline,
+  relateSession,
   type ChatGptEvidencePort,
   type TerminalCode,
 } from "./chatgpt-evidence.js";
@@ -24,10 +25,11 @@ export const DEFAULT_CHATGPT_TIMING: ChatGptTurnTiming = {
 /** 同一标签页上尚未对上新用户轮次的发送次数。不是页面身份，只用来拒绝含糊归属。 */
 export interface SendLedger {
   unmatched: number;
+  pendingConversationId: string | null;
 }
 
 export function createSendLedger(): SendLedger {
-  return { unmatched: 0 };
+  return { unmatched: 0, pendingConversationId: null };
 }
 
 export async function runChatGptTurn(
@@ -53,6 +55,17 @@ export async function runChatGptTurn(
     if (blocked) {
       return failure(blocked.code, blocked.message);
     }
+    if (ledger.unmatched > 0) {
+      const movedAway = ledger.pendingConversationId
+        && baseline.session.state === "ready"
+        && baseline.session.kind === "conversation"
+        && baseline.session.id !== ledger.pendingConversationId;
+      if (!movedAway) {
+        return failure("unknown", "上一轮发送尚未对上回复，已阻止再次发送");
+      }
+      ledger.unmatched = 0;
+      ledger.pendingConversationId = null;
+    }
     if (!page.writePrompt(trimmed)) {
       return failure("prompt_missing", "未找到 ChatGPT 输入框");
     }
@@ -65,10 +78,17 @@ export async function runChatGptTurn(
     if (blockedAgain) {
       return failure(blockedAgain.code, blockedAgain.message);
     }
+    const continuity = relateSession(baseline.session, committed.session, null, []);
+    if (continuity !== "same") {
+      return failure(continuity === "switched" ? "navigation" : "unknown", "输入后会话身份变化，未发送问题");
+    }
     if (!page.submit()) {
       return failure("send_missing", "未找到可用的 ChatGPT 发送按钮");
     }
     ledger.unmatched += 1;
+    ledger.pendingConversationId = committed.session.state === "ready" && committed.session.kind === "conversation"
+      ? committed.session.id
+      : null;
     const canAttribute = ledger.unmatched === 1;
     disarm = page.watchStop(() => {
       stopClicked = true;
@@ -85,6 +105,7 @@ export async function runChatGptTurn(
       const assessment = assessPoll(memory, evidence, stopClicked, textTurnIds, canAttribute);
       if (assessment.kind === "success") {
         ledger.unmatched = Math.max(0, ledger.unmatched - 1);
+        ledger.pendingConversationId = null;
         return { ok: true, body: assessment.body };
       }
       if (assessment.kind === "terminal") {
