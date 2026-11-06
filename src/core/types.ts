@@ -100,10 +100,14 @@ export interface ProviderResponse {
   error?: { code: string; message: string };
 }
 
+export interface ProviderCallContext {
+  signal?: AbortSignal;
+}
+
 export interface ProviderAdapter {
   id: ProviderId;
   mode: AdapterMode;
-  respond(request: ProviderRequest): Promise<ProviderResponse>;
+  respond(request: ProviderRequest, context?: ProviderCallContext): Promise<ProviderResponse>;
 }
 
 export interface Clock {

@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  CHATGPT_END_SELECTOR,
+  CHATGPT_ERROR_SELECTOR,
   CHATGPT_PROMPT_SELECTOR,
   CHATGPT_SEND_SELECTOR,
+  CHATGPT_STOP_SELECTOR,
+  CHATGPT_TURN_SELECTOR,
+  createDomEvidencePort,
   lastVisible,
+  readPageEvidence,
+  watchStopClicks,
+  type EvidenceQueryElement,
+  type EvidenceQueryRoot,
 } from "../src/extension/chatgpt-dom.js";
+import { runChatGptTurn } from "../src/extension/chatgpt-turn.js";
 
 describe("ChatGPT DOM 边界", () => {
   it("兼容当前 contenteditable 输入框和无 data-testid 的发送按钮", () => {
@@ -15,5 +25,178 @@ describe("ChatGPT DOM 边界", () => {
     const visible = { getClientRects: () => [{}] };
     assert.equal(lastVisible([hidden, visible]), visible);
     assert.equal(lastVisible([hidden]), null);
+  });
+});
+
+class OfflineNode implements EvidenceQueryRoot, EvidenceQueryElement {
+  tag: string;
+  attrs: Record<string, string>;
+  children: OfflineNode[] = [];
+  rects: number;
+  disabled = false;
+  value = "";
+  clicks = 0;
+  textReads = 0;
+  private body: string;
+
+  constructor(tag: string, attrs: Record<string, string> = {}, text = "") {
+    this.tag = tag;
+    this.attrs = attrs;
+    this.body = text;
+    this.rects = 1;
+  }
+
+  get textContent(): string {
+    this.textReads += 1;
+    return this.body;
+  }
+
+  set textContent(value: string | null) {
+    this.body = value ?? "";
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attrs[name] ?? null;
+  }
+
+  getClientRects(): ArrayLike<unknown> {
+    return this.rects > 0 ? [{}] : [];
+  }
+
+  querySelector(selector: string): OfflineNode | null {
+    return query(this, selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector: string): OfflineNode[] {
+    return query(this, selector);
+  }
+
+  click(): void {
+    this.clicks += 1;
+  }
+}
+
+function query(start: OfflineNode, selector: string): OfflineNode[] {
+  const found: OfflineNode[] = [];
+  const visit = (node: OfflineNode, includeSelf: boolean) => {
+    if (includeSelf && matches(node, selector)) found.push(node);
+    for (const child of node.children) visit(child, true);
+  };
+  visit(start, false);
+  return found;
+}
+
+function matches(node: OfflineNode, selector: string): boolean {
+  return selector.split(",").some((part) => matchesSimple(node, part.trim()));
+}
+
+function matchesSimple(node: OfflineNode, selector: string): boolean {
+  if (selector.startsWith("#")) {
+    return node.attrs.id === selector.slice(1);
+  }
+  const tag = /^[a-z]+/i.exec(selector);
+  let rest = selector;
+  if (tag) {
+    if (node.tag !== tag[0]) return false;
+    rest = selector.slice(tag[0].length);
+  }
+  const attrs = [...rest.matchAll(/\[([^\]=]+)="([^"]*)"\]/g)];
+  if (!tag && attrs.length === 0) return false;
+  return attrs.every((match) => node.attrs[match[1] ?? ""] === match[2]);
+}
+
+function offlinePage(): { root: OfflineNode; prompt: OfflineNode; send: OfflineNode } {
+  const root = new OfflineNode("div");
+  const prompt = new OfflineNode("textarea", { id: "prompt-textarea" });
+  const send = new OfflineNode("button", { "data-testid": "send-button" });
+  root.children.push(prompt, send);
+  return { root, prompt, send };
+}
+
+describe("离线 DOM 模拟（不是 ChatGPT 页面）", () => {
+  it("结构、结束控件和稳定正文齐全时可以成功，且不预读未点名的正文", async () => {
+    const { root, send } = offlinePage();
+    let installed = false;
+    const old = new OfflineNode("div", { "data-message-author-role": "assistant", "data-message-id": "old" }, "OLD_SECRET");
+    root.children.push(old);
+    const port = createDomEvidencePort(() => root, () => "https://chatgpt.com/");
+    const result = await runChatGptTurn(port, "问题", {
+      polls: 6,
+      stableChecks: 2,
+      async wait() {
+        if (installed) return;
+        installed = true;
+        const user = new OfflineNode("div", { "data-message-author-role": "user", "data-message-id": "u1" });
+        const assistant = new OfflineNode("div", { "data-message-author-role": "assistant", "data-message-id": "a1" }, "OK");
+        assistant.children.push(new OfflineNode("button", { "aria-label": "Copy" }, "copy"));
+        root.children.push(user, assistant);
+      },
+    });
+    assert.deepEqual(result, { ok: true, body: "OK" });
+    assert.equal(send.clicks, 1);
+    assert.equal(old.textReads, 0);
+    assert.match(CHATGPT_TURN_SELECTOR, /data-message-author-role/);
+    assert.match(CHATGPT_END_SELECTOR, /aria-label/);
+  });
+
+  it("没有稳定身份、没有结束控件或出现错误标记时不成功，也不读取那份正文", async () => {
+    const missingId = offlinePage();
+    const secret = new OfflineNode("div", { "data-message-author-role": "assistant" }, "SECRET");
+    missingId.root.children.push(secret);
+    const unreadable = readPageEvidence(missingId.root, "https://chatgpt.com/", ["whatever"]);
+    assert.equal(unreadable.turns.state, "unreadable");
+    assert.equal(secret.textReads, 0);
+
+    const { root, send } = offlinePage();
+    let installed = false;
+    const port = createDomEvidencePort(() => root, () => "https://chatgpt.com/");
+    const result = await runChatGptTurn(port, "问题", {
+      polls: 3,
+      stableChecks: 1,
+      async wait() {
+        if (installed) return;
+        installed = true;
+        const user = new OfflineNode("div", { "data-message-author-role": "user", "data-message-id": "u1" });
+        const assistant = new OfflineNode("div", { "data-message-author-role": "assistant", "data-message-id": "a1" }, "NO_END");
+        root.children.push(user, assistant);
+      },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+    assert.equal(send.clicks, 1);
+    assert.equal(JSON.stringify(result).includes("NO_END"), false);
+
+    const errored = offlinePage();
+    errored.root.children.push(new OfflineNode("div", { role: "alert" }, "配额"));
+    const errorPort = createDomEvidencePort(() => errored.root, () => "https://chatgpt.com/");
+    const errorResult = await runChatGptTurn(errorPort, "问题", { polls: 1, stableChecks: 1, async wait() {} });
+    assert.equal(errorResult.ok, false);
+    if (!errorResult.ok) assert.equal(errorResult.code, "page_error");
+    assert.equal(errored.send.clicks, 0);
+    assert.match(CHATGPT_ERROR_SELECTOR, /alert/);
+  });
+
+  it("只有点在停止控件上才记手停", () => {
+    let clicks = 0;
+    let listener: ((event: { target: unknown }) => void) | undefined;
+    const root: EvidenceQueryRoot = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener(_type, callback) {
+        listener = callback;
+      },
+      removeEventListener() {
+        listener = undefined;
+      },
+    };
+    const disarm = watchStopClicks(root, () => {
+      clicks += 1;
+    });
+    listener?.({ target: { closest: (selector: string) => (selector === CHATGPT_STOP_SELECTOR ? {} : null) } });
+    listener?.({ target: { closest: () => null } });
+    assert.equal(clicks, 1);
+    disarm();
+    listener?.({ target: { closest: () => ({}) } });
+    assert.equal(clicks, 1);
   });
 });

@@ -1,105 +1,122 @@
 import { MAX_MESSAGE_BODY_CHARS } from "../core/types.js";
 import type { ChatGptAskResult } from "./chatgpt-connector.js";
-
-export interface ChatGptPageStatus {
-  assistantCount: number;
-  isGenerating: boolean;
-}
-
-export interface ChatGptPagePort {
-  status(): ChatGptPageStatus;
-  writePrompt(prompt: string): boolean;
-  submit(): boolean;
-  latestAssistantText(): string;
-}
+import {
+  assessBaseline,
+  assessPoll,
+  deadlineResult,
+  memoryFromBaseline,
+  type ChatGptEvidencePort,
+  type TerminalCode,
+} from "./chatgpt-evidence.js";
 
 export interface ChatGptTurnTiming {
-  startChecks: number;
-  completionChecks: number;
+  polls: number;
   stableChecks: number;
-  wait(): Promise<void>;
+  wait(signal: AbortSignal): Promise<void>;
 }
 
 export const DEFAULT_CHATGPT_TIMING: ChatGptTurnTiming = {
-  startChecks: 40,
-  completionChecks: 240,
+  polls: 240,
   stableChecks: 3,
-  wait: () => new Promise((resolve) => setTimeout(resolve, 250)),
+  wait: (signal) => abortableDelay(250, signal),
 };
 
 export async function runChatGptTurn(
-  page: ChatGptPagePort,
+  page: ChatGptEvidencePort,
   prompt: string,
   timing: ChatGptTurnTiming = DEFAULT_CHATGPT_TIMING,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<ChatGptAskResult> {
   const trimmed = prompt.trim();
   if (!trimmed || trimmed.length > MAX_MESSAGE_BODY_CHARS) {
     return failure("invalid_request", "问题为空或超过长度上限");
   }
-
-  const baseline = page.status();
-  if (baseline.isGenerating) {
-    return failure("busy", "ChatGPT 页面仍在生成，请等待完成后重试");
-  }
-  if (!page.writePrompt(trimmed)) {
-    return failure("prompt_missing", "未找到 ChatGPT 输入框");
-  }
-  await timing.wait();
-  if (!page.submit()) {
-    return failure("send_missing", "未找到可用的 ChatGPT 发送按钮");
+  if (signal.aborted) {
+    return failure("cancelled", "采集已取消，不会再发送或提交结果");
   }
 
-  let started = false;
-  for (let check = 0; check < timing.startChecks; check += 1) {
-    await timing.wait();
-    const status = page.status();
-    if (status.isGenerating || status.assistantCount > baseline.assistantCount) {
-      started = true;
-      break;
+  let stopClicked = false;
+  let disarm = () => undefined as void;
+  try {
+    disarm = page.watchStop(() => {
+      stopClicked = true;
+    });
+    const baseline = page.read({ textTurnIds: [] });
+    const blocked = assessBaseline(baseline);
+    if (blocked) {
+      return failure(blocked.code, blocked.message);
     }
-  }
-  if (!started) {
-    return failure("start_timeout", "ChatGPT 未在限定时间内开始生成");
-  }
+    if (!page.writePrompt(trimmed)) {
+      return failure("prompt_missing", "未找到 ChatGPT 输入框");
+    }
+    await timing.wait(signal);
+    if (signal.aborted) {
+      return failure("cancelled", "采集已取消，不会再发送或提交结果");
+    }
+    if (stopClicked) {
+      return failure("stopped", "已观察到本轮停止动作，残留文本不算正常结束");
+    }
+    if (!page.submit()) {
+      return failure("send_missing", "未找到可用的 ChatGPT 发送按钮");
+    }
 
-  let lastText = "";
-  let stableReads = 0;
-  let sawCompleted = false;
-  let sawNonEmpty = false;
-  for (let check = 0; check < timing.completionChecks; check += 1) {
-    await timing.wait();
-    const status = page.status();
-    if (status.isGenerating || status.assistantCount <= baseline.assistantCount) {
-      stableReads = 0;
-      continue;
+    let memory = memoryFromBaseline(baseline, timing.stableChecks);
+    let textTurnIds: string[] = [];
+    for (let poll = 0; poll < timing.polls; poll += 1) {
+      await timing.wait(signal);
+      if (signal.aborted) {
+        return failure("cancelled", "采集已取消，不会再发送或提交结果");
+      }
+      const evidence = page.read({ textTurnIds });
+      const assessment = assessPoll(memory, evidence, stopClicked, textTurnIds);
+      if (assessment.kind === "success") {
+        return { ok: true, body: assessment.body };
+      }
+      if (assessment.kind === "terminal") {
+        return failure(assessment.code, assessment.message);
+      }
+      memory = assessment.memory;
+      textTurnIds = memory.attributedAssistantId ? [memory.attributedAssistantId] : [];
     }
-
-    sawCompleted = true;
-    const text = page.latestAssistantText().trim();
-    if (!text) {
-      stableReads = 0;
-      continue;
+    const deadline = deadlineResult(memory);
+    return failure(deadline.code, deadline.message);
+  } catch (error) {
+    if (signal.aborted || isAbortError(error)) {
+      return failure("cancelled", "采集已取消，不会再发送或提交结果");
     }
-    sawNonEmpty = true;
-    if (text.length > MAX_MESSAGE_BODY_CHARS) {
-      return failure("response_too_large", "ChatGPT 回复超过本地记录上限");
-    }
-    if (text === lastText) {
-      stableReads += 1;
-    } else {
-      lastText = text;
-      stableReads = 1;
-    }
-    if (stableReads >= timing.stableChecks) {
-      return { ok: true, body: text };
-    }
+    return failure("unknown", "页面证据读取失败");
+  } finally {
+    disarm();
   }
-
-  return sawCompleted && !sawNonEmpty
-    ? failure("empty_response", "ChatGPT 已完成但回复为空")
-    : failure("completion_timeout", "等待 ChatGPT 完成超时");
 }
 
-function failure(code: Exclude<ChatGptAskResult, { ok: true }>["code"], message: string): ChatGptAskResult {
+export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function failure(code: TerminalCode | "invalid_request" | "prompt_missing" | "send_missing" | "cancelled", message: string): ChatGptAskResult {
   return { ok: false, code, message };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function abortError(): Error {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
 }

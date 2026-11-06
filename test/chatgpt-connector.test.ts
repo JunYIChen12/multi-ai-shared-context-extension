@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   connectActiveChatGptTab,
   createChatGptAdapter,
+  createChatGptTabTransport,
   discussionPath,
   isChatGptUrl,
   readChatGptTabId,
@@ -148,5 +149,40 @@ describe("ChatGPT 连接器协议", () => {
       message: "无法临时连接 ChatGPT 标签页，请重试",
     });
     assert.deepEqual(opened, []);
+  });
+
+  it("外层取消只发一次取消，并忽略晚到的成功正文", async () => {
+    const sent: Array<{ type: string; requestId?: string }> = [];
+    let resolveAsk: (value: unknown) => void = () => undefined;
+    let markAsked: () => void = () => undefined;
+    const asked = new Promise<void>((resolve) => {
+      markAsked = resolve;
+    });
+    const adapter = createChatGptAdapter(
+      createChatGptTabTransport(7, {
+        async sendToTab(_tabId, message) {
+          sent.push(message);
+          if (message.type === "ask") {
+            markAsked();
+            return new Promise((resolve) => {
+              resolveAsk = resolve;
+            });
+          }
+          return { ok: true };
+        },
+      }),
+    );
+    const controller = new AbortController();
+    const pending = adapter.respond(request, { signal: controller.signal });
+    await asked;
+    controller.abort();
+    const response = await pending;
+    resolveAsk({ ok: true, body: "LATE" });
+    await Promise.resolve();
+    assert.equal(response.status, "cancelled");
+    assert.equal(response.body, "");
+    assert.equal(sent.filter((item) => item.type === "ask").length, 1);
+    assert.equal(sent.filter((item) => item.type === "cancel").length, 1);
+    assert.equal(sent[0]?.requestId, sent[1]?.requestId);
   });
 });

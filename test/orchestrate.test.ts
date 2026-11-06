@@ -47,7 +47,64 @@ describe("独立回答", () => {
     assert.equal(reply.adapterMode, "live");
     assert.equal(reply.body, "CHATGPT_LIVE_OK");
     assert.equal(isInjectableOpinion(reply), true);
+    assert.equal(outcomeHeadline(reply), "页面结束");
     assert.match(contractViolation({ mode: "live", status: "complete", body: "" }) ?? "", /正文/);
+  });
+
+  it("手停和未知不会留下可注入正文", async () => {
+    const stopped: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "cancelled", body: "残文", error: { code: "stopped", message: "已手停" } };
+      },
+    };
+    const opts = options([stopped]);
+    const ran = await runIndependentRound(await started("手停", opts), opts);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) return;
+    const reply = ran.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(reply?.status, "cancelled");
+    assert.equal(reply?.body, "");
+    assert.equal(reply?.sourceKind, "system");
+    assert.equal(reply ? outcomeHeadline(reply) : "", "已手停");
+    assert.equal(reply ? isInjectableOpinion(reply) : true, false);
+  });
+
+  it("外层超时后不接收晚到的完成正文，下一轮不被污染", async () => {
+    let round = 0;
+    const live: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond(_request, context) {
+        round += 1;
+        if (round === 1) {
+          return await new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ mode: "live", status: "complete", body: "LATE" }), 200);
+            context?.signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              resolve({ mode: "live", status: "complete", body: "LATE" });
+            });
+          });
+        }
+        return { mode: "live", status: "complete", body: "SECOND" };
+      },
+    };
+    const slow = options([live], 20);
+    const first = await runIndependentRound(await started("超时", slow), slow);
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    const late = first.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(late?.status, "timeout");
+    assert.equal(late?.body, "");
+    assert.equal(late ? isInjectableOpinion(late) : true, false);
+
+    const second = await runIndependentRound(await started("下一轮", options([live], 1000)), options([live], 1000));
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+    const reply = second.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(reply?.body, "SECOND");
+    assert.equal(reply?.status, "complete");
   });
 
   it("默认适配器全部未接入，且不会变成可注入观点", async () => {

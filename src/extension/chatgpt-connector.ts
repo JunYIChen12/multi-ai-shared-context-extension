@@ -1,4 +1,4 @@
-import type { ProviderAdapter, ProviderRequest, ProviderResponse } from "../core/types.js";
+import type { MessageStatus, ProviderAdapter, ProviderRequest, ProviderResponse } from "../core/types.js";
 import { MAX_MESSAGE_BODY_CHARS } from "../core/types.js";
 
 export const CHATGPT_CHANNEL = "multi-ai-chatgpt-v1" as const;
@@ -14,12 +14,25 @@ export type ChatGptErrorCode =
   | "invalid_request"
   | "invalid_response"
   | "connection_lost"
-  | "unsupported_phase";
+  | "unsupported_phase"
+  | "unknown"
+  | "stopped"
+  | "navigation"
+  | "page_error"
+  | "cancelled"
+  | "in_flight";
 
 export interface ChatGptAskRequest {
   channel: typeof CHATGPT_CHANNEL;
   type: "ask";
   prompt: string;
+  requestId: string;
+}
+
+export interface ChatGptCancelRequest {
+  channel: typeof CHATGPT_CHANNEL;
+  type: "cancel";
+  requestId: string;
 }
 
 export type ChatGptAskResult =
@@ -27,11 +40,11 @@ export type ChatGptAskResult =
   | { ok: false; code: ChatGptErrorCode; message: string };
 
 export interface ChatGptTransport {
-  send(request: ChatGptAskRequest): Promise<unknown>;
+  send(request: ChatGptAskRequest, signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface ChatGptTabMessagePort {
-  sendToTab(tabId: number, request: ChatGptAskRequest): Promise<unknown>;
+  sendToTab(tabId: number, request: ChatGptAskRequest | ChatGptCancelRequest): Promise<unknown>;
 }
 
 export interface ChatGptConnectionPort {
@@ -56,23 +69,39 @@ const ERROR_CODES = new Set<ChatGptErrorCode>([
   "invalid_response",
   "connection_lost",
   "unsupported_phase",
+  "unknown",
+  "stopped",
+  "navigation",
+  "page_error",
+  "cancelled",
+  "in_flight",
 ]);
 
 export function createChatGptAdapter(transport: ChatGptTransport): ProviderAdapter {
   return {
     id: "chatgpt",
     mode: "live",
-    async respond(request): Promise<ProviderResponse> {
+    async respond(request, context): Promise<ProviderResponse> {
       if (request.phase !== "independent") {
         return failed("unsupported_phase", "本轮只允许 ChatGPT 第一轮独立回答");
       }
+      const signal = context?.signal;
+      if (signal?.aborted) {
+        return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
+      }
       try {
-        const result = parseResult(await transport.send(toAskRequest(request)));
+        const result = parseResult(await transport.send(toAskRequest(request), signal));
+        if (signal?.aborted) {
+          return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
+        }
         if (!result.ok) {
-          return failed(result.code, result.message);
+          return failed(result.code, result.message, statusFor(result.code));
         }
         return { mode: "live", status: "complete", body: result.body };
-      } catch {
+      } catch (error) {
+        if (signal?.aborted || isAbortError(error)) {
+          return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
+        }
         return failed("connection_lost", "ChatGPT 标签页连接已失效，请重新点击扩展连接");
       }
     },
@@ -84,8 +113,32 @@ export function createChatGptTabTransport(tabId: number, port: ChatGptTabMessage
     throw new Error("ChatGPT tab ID 无效");
   }
   return {
-    send(request) {
-      return port.sendToTab(tabId, request);
+    send(request, signal) {
+      if (signal?.aborted) {
+        return Promise.reject(abortError());
+      }
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (settle: () => void) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          settle();
+        };
+        const onAbort = () => {
+          void port
+            .sendToTab(tabId, { channel: CHATGPT_CHANNEL, type: "cancel", requestId: request.requestId })
+            .catch(() => undefined);
+          finish(() => reject(abortError()));
+        };
+        signal?.addEventListener("abort", onAbort);
+        void port.sendToTab(tabId, request).then(
+          (value) => finish(() => resolve(value)),
+          (error: unknown) => finish(() => reject(error)),
+        );
+      });
     },
   };
 }
@@ -141,6 +194,7 @@ function toAskRequest(request: ProviderRequest): ChatGptAskRequest {
     channel: CHATGPT_CHANNEL,
     type: "ask",
     prompt: request.userPrompt,
+    requestId: crypto.randomUUID(),
   };
 }
 
@@ -180,6 +234,23 @@ function invalidResponse(): ChatGptAskResult {
   return { ok: false, code: "invalid_response", message: "ChatGPT 页面返回了无效结果" };
 }
 
-function failed(code: ChatGptErrorCode, message: string): ProviderResponse {
-  return { mode: "live", status: "failed", body: "", error: { code, message } };
+function failed(code: ChatGptErrorCode, message: string, status: MessageStatus = "failed"): ProviderResponse {
+  return { mode: "live", status, body: "", error: { code, message } };
+}
+
+function statusFor(code: ChatGptErrorCode): MessageStatus {
+  if (code === "stopped" || code === "cancelled") {
+    return "cancelled";
+  }
+  return "failed";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function abortError(): Error {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
 }

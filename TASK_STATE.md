@@ -50,9 +50,8 @@
 
 判断与决定：
 
-- 上述两次 DOM 路线尝试已达到既定停止条件。暂停 DOM 路线；不进行第三次选择器或时序猜测，也不扩大权限。
-- Issue #2 保持开放。复审评论：[Issue #2 评论 6676176718](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/2#issuecomment-6676176718)。
-- 恢复开发前先重新评审：证明稳定且隐私安全的 DOM 锚点；或改为用户明确选取/确认回复的半自动路线；或暂停等待稳定公开界面契约。
+- 上述两次 DOM 路线尝试仍是当时的网页记录。Task 6 继续未完成，Issue #2 保持开放。复审评论：[Issue #2 评论 6676176718](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/2#issuecomment-6676176718)。
+- 后续离线修复批次改的是归属和终态判定，不是第三次选择器猜测，也没有做真实网页或文件验收。证据契约见 `docs/chatgpt-evidence-contract.md`。读不到字段时保持未知，不扩大权限。
 
 ## 停止条件
 

@@ -1,196 +1,446 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  runChatGptTurn,
-  type ChatGptPagePort,
-  type ChatGptPageStatus,
-  type ChatGptTurnTiming,
-} from "../src/extension/chatgpt-turn.js";
 import { MAX_MESSAGE_BODY_CHARS } from "../src/core/types.js";
+import type { ChatGptEvidencePort, PageEvidence, StructuralTurn } from "../src/extension/chatgpt-evidence.js";
+import { parseSessionUrl, relateSession } from "../src/extension/chatgpt-evidence.js";
+import { abortableDelay, runChatGptTurn, type ChatGptTurnTiming } from "../src/extension/chatgpt-turn.js";
 
 const timing: ChatGptTurnTiming = {
-  startChecks: 2,
-  completionChecks: 4,
+  polls: 6,
   stableChecks: 2,
-  async wait() {},
+  async wait(signal) {
+    if (signal.aborted) {
+      throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+    }
+  },
 };
 
-function page(options: {
-  statuses: ChatGptPageStatus[];
-  text?: string;
-  writes?: boolean;
-  submits?: boolean;
-}): ChatGptPagePort {
-  let index = 0;
+function turn(partial: Partial<StructuralTurn> & Pick<StructuralTurn, "id" | "role" | "order">): StructuralTurn {
   return {
-    status() {
-      const status = options.statuses[Math.min(index, options.statuses.length - 1)];
+    endControl: { state: "unreadable" },
+    ...partial,
+  };
+}
+
+function evidence(options: {
+  url?: string;
+  turns?: StructuralTurn[];
+  turnsUnreadable?: boolean;
+  stop?: boolean;
+  stopUnreadable?: boolean;
+  error?: "none" | "present";
+  errorUnreadable?: boolean;
+}): PageEvidence {
+  const session = parseSessionUrl(options.url ?? "https://chatgpt.com/");
+  return {
+    session,
+    turns: options.turnsUnreadable
+      ? { state: "unreadable" }
+      : { state: "ready", value: options.turns ?? [] },
+    composerStop: options.stopUnreadable
+      ? { state: "unreadable" }
+      : { state: "ready", value: options.stop ?? false },
+    pageError: options.errorUnreadable
+      ? { state: "unreadable" }
+      : { state: "ready", value: options.error ?? "none" },
+  };
+}
+
+function scripted(
+  reads: PageEvidence[],
+  hooks?: { writes?: boolean; submits?: boolean; wait?: (info: { submitted: boolean; fireStop: () => void }) => void },
+): {
+  page: ChatGptEvidencePort;
+  submits: () => number;
+  writes: () => number;
+  requested: string[][];
+  disarmed: () => number;
+  timing: ChatGptTurnTiming;
+} {
+  let submitCount = 0;
+  let writeCount = 0;
+  let disarmCount = 0;
+  let submitted = false;
+  let fireStop = () => undefined as void;
+  const requested: string[][] = [];
+  let index = 0;
+  const page: ChatGptEvidencePort = {
+    read(request) {
+      requested.push([...request.textTurnIds]);
+      const item = reads[Math.min(index, reads.length - 1)] ?? evidence({});
       index += 1;
-      return status ?? { assistantCount: 0, isGenerating: false };
+      return item;
     },
     writePrompt() {
-      return options.writes ?? true;
+      writeCount += 1;
+      return hooks?.writes ?? true;
     },
     submit() {
-      return options.submits ?? true;
+      submitCount += 1;
+      submitted = true;
+      return hooks?.submits ?? true;
     },
-    latestAssistantText() {
-      return options.text ?? "";
+    watchStop(onStop) {
+      fireStop = onStop;
+      return () => {
+        disarmCount += 1;
+      };
+    },
+  };
+  return {
+    page,
+    submits: () => submitCount,
+    writes: () => writeCount,
+    requested,
+    disarmed: () => disarmCount,
+    timing: {
+      ...timing,
+      async wait(signal) {
+        hooks?.wait?.({ submitted, fireStop });
+        if (signal.aborted) {
+          throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+        }
+      },
     },
   };
 }
 
-describe("ChatGPT 单轮状态机", () => {
-  it("只在新增回复停止生成且正文稳定后返回成功", async () => {
-    const result = await runChatGptTurn(
-      page({
-        statuses: [
-          { assistantCount: 0, isGenerating: false },
-          { assistantCount: 0, isGenerating: true },
-          { assistantCount: 1, isGenerating: false },
-          { assistantCount: 1, isGenerating: false },
-        ],
-        text: "CHATGPT_LIVE_OK",
-      }),
-      "只回复 CHATGPT_LIVE_OK",
-      timing,
-    );
+const readyEnd = { state: "ready" as const, value: true as const };
+
+describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", () => {
+  it("归属和自然结束组合齐全时成功，包括曾经看见生成", async () => {
+    const generating = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "CHATGPT_LIVE_OK", endControl: readyEnd }),
+      ],
+      stop: true,
+    });
+    const done = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "CHATGPT_LIVE_OK", endControl: readyEnd }),
+      ],
+      stop: false,
+    });
+    const script = scripted([evidence({}), generating, done, done, done]);
+    const result = await runChatGptTurn(script.page, "只回复 CHATGPT_LIVE_OK", script.timing);
     assert.deepEqual(result, { ok: true, body: "CHATGPT_LIVE_OK" });
+    assert.equal(script.submits(), 1);
   });
 
-  it("等待发送按钮在输入状态更新后可用再提交", async () => {
-    let sendReady = false;
-    let statusIndex = 0;
-    const events: string[] = [];
-    const statuses: ChatGptPageStatus[] = [
-      { assistantCount: 0, isGenerating: false },
-      { assistantCount: 0, isGenerating: true },
-      { assistantCount: 1, isGenerating: false },
-      { assistantCount: 1, isGenerating: false },
-    ];
-    const result = await runChatGptTurn(
-      {
-        status() {
-          const status = statuses[Math.min(statusIndex, statuses.length - 1)];
-          statusIndex += 1;
-          return status ?? { assistantCount: 0, isGenerating: false };
-        },
-        writePrompt() {
-          events.push("write");
-          return true;
-        },
-        submit() {
-          events.push("submit");
-          return sendReady;
-        },
-        latestAssistantText() {
-          return "REPLY";
-        },
-      },
-      "问题",
-      {
-        ...timing,
-        async wait() {
-          events.push("wait");
-          sendReady = true;
-        },
-      },
-    );
-
-    assert.deepEqual(result, { ok: true, body: "REPLY" });
-    assert.deepEqual(events.slice(0, 3), ["write", "wait", "submit"]);
+  it("极短回复没见过 Stop 开始，只要归属和其他结束组合齐全就成功", async () => {
+    const done = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "OK", endControl: readyEnd }),
+      ],
+      stop: false,
+    });
+    const script = scripted([evidence({}), done, done, done]);
+    const result = await runChatGptTurn(script.page, "短", script.timing);
+    assert.deepEqual(result, { ok: true, body: "OK" });
+    assert.equal(script.requested.some((ids) => ids.includes("a1")), true);
+    assert.equal(script.requested[0]?.length, 0);
   });
 
-  it("拒绝忙碌页面、空问题和缺失控件", async () => {
-    const busy = await runChatGptTurn(
-      page({ statuses: [{ assistantCount: 0, isGenerating: true }] }),
-      "问题",
-      timing,
-    );
-    assert.equal(busy.ok, false);
-    if (!busy.ok) assert.equal(busy.code, "busy");
-
-    const empty = await runChatGptTurn(
-      page({ statuses: [{ assistantCount: 0, isGenerating: false }] }),
-      "   ",
-      timing,
-    );
-    assert.equal(empty.ok, false);
-    if (!empty.ok) assert.equal(empty.code, "invalid_request");
-
-    const missingPrompt = await runChatGptTurn(
-      page({ statuses: [{ assistantCount: 0, isGenerating: false }], writes: false }),
-      "问题",
-      timing,
-    );
-    assert.equal(missingPrompt.ok, false);
-    if (!missingPrompt.ok) assert.equal(missingPrompt.code, "prompt_missing");
-
-    const missingSend = await runChatGptTurn(
-      page({ statuses: [{ assistantCount: 0, isGenerating: false }], submits: false }),
-      "问题",
-      timing,
-    );
-    assert.equal(missingSend.ok, false);
-    if (!missingSend.ok) assert.equal(missingSend.code, "send_missing");
+  it("只有 Copy、稳定文本或 Stop 消失，缺归属或缺结束判据时不成功", async () => {
+    const oldOnly = evidence({
+      turns: [turn({ id: "a0", role: "assistant", order: 0, text: "OLD", endControl: readyEnd })],
+      stop: false,
+    });
+    const missingEnd = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "MAYBE" }),
+      ],
+      stop: false,
+    });
+    const unreadableError = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "MAYBE", endControl: readyEnd }),
+      ],
+      stop: false,
+      errorUnreadable: true,
+    });
+    for (const reads of [
+      [evidence({ turns: [turn({ id: "a0", role: "assistant", order: 0, text: "OLD", endControl: readyEnd })] }), oldOnly, oldOnly],
+      [evidence({}), missingEnd, missingEnd, missingEnd, missingEnd, missingEnd, missingEnd],
+      [evidence({}), unreadableError],
+    ]) {
+      const script = scripted(reads);
+      const result = await runChatGptTurn(script.page, "问题", script.timing);
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.notEqual(result.code, "stopped");
+        assert.equal("body" in result, false);
+      }
+    }
   });
 
-  it("区分生成未开始、完成超时和空回复", async () => {
-    const notStarted = await runChatGptTurn(
-      page({
-        statuses: [
-          { assistantCount: 2, isGenerating: false },
-          { assistantCount: 2, isGenerating: false },
-          { assistantCount: 2, isGenerating: false },
-        ],
-      }),
-      "问题",
-      timing,
-    );
-    assert.equal(notStarted.ok, false);
-    if (!notStarted.ok) assert.equal(notStarted.code, "start_timeout");
-
-    const neverDone = await runChatGptTurn(
-      page({
-        statuses: [
-          { assistantCount: 0, isGenerating: false },
-          { assistantCount: 0, isGenerating: true },
-          { assistantCount: 1, isGenerating: true },
-        ],
-      }),
-      "问题",
-      timing,
-    );
-    assert.equal(neverDone.ok, false);
-    if (!neverDone.ok) assert.equal(neverDone.code, "completion_timeout");
-
-    const emptyReply = await runChatGptTurn(
-      page({
-        statuses: [
-          { assistantCount: 0, isGenerating: false },
-          { assistantCount: 1, isGenerating: false },
-        ],
-      }),
-      "问题",
-      timing,
-    );
-    assert.equal(emptyReply.ok, false);
-    if (!emptyReply.ok) assert.equal(emptyReply.code, "empty_response");
-  });
-
-  it("拒绝超过记录上限的真实回复", async () => {
-    const result = await runChatGptTurn(
-      page({
-        statuses: [
-          { assistantCount: 0, isGenerating: false },
-          { assistantCount: 1, isGenerating: false },
-        ],
-        text: "x".repeat(MAX_MESSAGE_BODY_CHARS + 1),
-      }),
-      "问题",
-      timing,
-    );
+  it("未确认新用户轮次时，不收旧回复、重挂载或最后节点", async () => {
+    const baseline = evidence({
+      turns: [
+        turn({ id: "u0", role: "user", order: 0 }),
+        turn({ id: "a0", role: "assistant", order: 1, text: "OLD_SECRET" }),
+      ],
+    });
+    const remount = evidence({
+      turns: [
+        turn({ id: "a0", role: "assistant", order: 0, text: "OLD_SECRET", endControl: readyEnd }),
+        turn({ id: "u0", role: "user", order: 1 }),
+      ],
+    });
+    const script = scripted([baseline, remount, remount, remount]);
+    const result = await runChatGptTurn(script.page, "问题", { ...script.timing, polls: 3 });
     assert.equal(result.ok, false);
-    if (!result.ok) assert.equal(result.code, "response_too_large");
+    if (!result.ok) assert.equal(result.code, "unknown");
+    assert.equal(script.requested.some((ids) => ids.includes("a0")), false);
+    assert.equal(JSON.stringify(result).includes("OLD_SECRET"), false);
+  });
+
+  it("同文问题或其他轮次的新回复不能靠文本绑定", async () => {
+    const baseline = evidence({
+      turns: [turn({ id: "u0", role: "user", order: 0 }), turn({ id: "a0", role: "assistant", order: 1, text: "SAME" })],
+    });
+    const twoUsers = evidence({
+      turns: [
+        turn({ id: "u0", role: "user", order: 0 }),
+        turn({ id: "u1", role: "user", order: 1 }),
+        turn({ id: "u2", role: "user", order: 2 }),
+        turn({ id: "a9", role: "assistant", order: 3, text: "SAME", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([baseline, twoUsers]);
+    const result = await runChatGptTurn(script.page, "SAME", script.timing);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+    assert.equal(JSON.stringify(result).includes("SAME"), false);
+  });
+
+  it("明确的停止点击之后，残文稳定也不算正常结束", async () => {
+    const done = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "残文", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), done, done], {
+      wait({ submitted, fireStop }) {
+        if (submitted) fireStop();
+      },
+    });
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "stopped");
+    assert.equal(JSON.stringify(result).includes("残文"), false);
+  });
+
+  it("没观察到停止动作时，结束信号消失不会被猜成手停或成功", async () => {
+    const fading = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "含糊" }),
+      ],
+      stop: false,
+    });
+    const script = scripted([
+      evidence({}),
+      evidence({
+        stop: true,
+        turns: [
+          turn({ id: "u1", role: "user", order: 0 }),
+          turn({ id: "a1", role: "assistant", order: 1, text: "含糊" }),
+        ],
+      }),
+      fading,
+      fading,
+      fading,
+      fading,
+    ]);
+    const result = await runChatGptTurn(script.page, "问题", { ...script.timing, polls: 4 });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, "unknown");
+    }
+    assert.equal(JSON.stringify(result).includes("含糊"), false);
+  });
+
+  it("新聊天地址能用同一新用户轮次证明连续，证明不了则未知，换会话则隔离", async () => {
+    const extended = evidence({
+      url: "https://chatgpt.com/c/new-chat",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "连续", endControl: readyEnd }),
+      ],
+    });
+    const continued = scripted([evidence({}), extended, extended, extended]);
+    const continuedResult = await runChatGptTurn(continued.page, "问题", continued.timing);
+    assert.deepEqual(continuedResult, { ok: true, body: "连续" });
+
+    const unproven = scripted([
+      evidence({}),
+      evidence({ url: "https://chatgpt.com/c/new-chat", turns: [turn({ id: "a0", role: "assistant", order: 0, text: "别人的" })] }),
+    ]);
+    const unprovenResult = await runChatGptTurn(unproven.page, "问题", unproven.timing);
+    assert.equal(unprovenResult.ok, false);
+    if (!unprovenResult.ok) assert.equal(unprovenResult.code, "unknown");
+
+    const switched = scripted([
+      evidence({ url: "https://chatgpt.com/c/aaa" }),
+      evidence({
+        url: "https://chatgpt.com/c/bbb",
+        turns: [turn({ id: "u9", role: "user", order: 0 }), turn({ id: "a9", role: "assistant", order: 1, text: "LEAK", endControl: readyEnd })],
+      }),
+    ]);
+    const switchedResult = await runChatGptTurn(switched.page, "问题", switched.timing);
+    assert.equal(switchedResult.ok, false);
+    if (!switchedResult.ok) assert.equal(switchedResult.code, "navigation");
+    assert.equal(JSON.stringify(switchedResult).includes("LEAK"), false);
+  });
+
+  it("点击了发送但没有新用户轮次时不收正文；控件缺失不会发送", async () => {
+    const baseline = evidence({ turns: [turn({ id: "u0", role: "user", order: 0 })] });
+    const script = scripted([baseline, baseline, baseline]);
+    const result = await runChatGptTurn(script.page, "问题", { ...script.timing, polls: 2 });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+    assert.equal(script.submits(), 1);
+
+    const missingSend = scripted([evidence({})], { submits: false });
+    const sendResult = await runChatGptTurn(missingSend.page, "问题", missingSend.timing);
+    assert.equal(sendResult.ok, false);
+    if (!sendResult.ok) assert.equal(sendResult.code, "send_missing");
+
+    const busy = scripted([evidence({ stop: true })]);
+    const busyResult = await runChatGptTurn(busy.page, "问题", busy.timing);
+    assert.equal(busyResult.ok, false);
+    if (!busyResult.ok) assert.equal(busyResult.code, "busy");
+    assert.equal(busy.writes(), 0);
+    assert.equal(busy.submits(), 0);
+  });
+
+  it("读取失败、页面错误、身份冲突和空正文都不会变成成功", async () => {
+    const exploding: ChatGptEvidencePort = {
+      read() {
+        throw new Error("SECRET_DOM");
+      },
+      writePrompt() {
+        return true;
+      },
+      submit() {
+        return true;
+      },
+      watchStop() {
+        return () => undefined;
+      },
+    };
+    const exploded = await runChatGptTurn(exploding, "问题", timing);
+    assert.equal(exploded.ok, false);
+    if (!exploded.ok) assert.equal(exploded.code, "unknown");
+    assert.equal(JSON.stringify(exploded).includes("SECRET_DOM"), false);
+
+    const errored = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "NO", endControl: readyEnd }),
+      ],
+      error: "present",
+    });
+    const errorScript = scripted([evidence({}), errored]);
+    const errorResult = await runChatGptTurn(errorScript.page, "问题", errorScript.timing);
+    assert.equal(errorResult.ok, false);
+    if (!errorResult.ok) assert.equal(errorResult.code, "page_error");
+
+    const empty = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "  ", endControl: readyEnd }),
+      ],
+    });
+    const emptyScript = scripted([evidence({}), empty, empty, empty]);
+    const emptyResult = await runChatGptTurn(emptyScript.page, "问题", { ...emptyScript.timing, polls: 3 });
+    assert.equal(emptyResult.ok, false);
+    if (!emptyResult.ok) assert.equal(emptyResult.code, "empty_response");
+
+    const huge = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({
+          id: "a1",
+          role: "assistant",
+          order: 1,
+          text: "x".repeat(MAX_MESSAGE_BODY_CHARS + 1),
+          endControl: readyEnd,
+        }),
+      ],
+    });
+    const hugeScript = scripted([evidence({}), huge, huge]);
+    const hugeResult = await runChatGptTurn(hugeScript.page, "问题", { ...hugeScript.timing, stableChecks: 1 });
+    assert.equal(hugeResult.ok, false);
+    if (!hugeResult.ok) assert.equal(hugeResult.code, "response_too_large");
+  });
+
+  it("外层取消会停止后续采集，晚到的完成证据不会变成结果，下一轮不受污染", async () => {
+    const late = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "LATE", endControl: readyEnd }),
+      ],
+    });
+    const first = scripted([evidence({}), late, late], {
+      wait() {
+        return undefined;
+      },
+    });
+    const controller = new AbortController();
+    first.timing.wait = (signal) => abortableDelay(5_000, signal);
+    const pending = runChatGptTurn(first.page, "第一问", first.timing, controller.signal);
+    controller.abort();
+    const cancelled = await pending;
+    assert.equal(cancelled.ok, false);
+    if (!cancelled.ok) assert.equal(cancelled.code, "cancelled");
+    assert.equal(first.disarmed(), 1);
+    assert.equal(JSON.stringify(cancelled).includes("LATE"), false);
+
+    const secondReads = [
+      evidence({
+        turns: [
+          turn({ id: "u1", role: "user", order: 0 }),
+          turn({ id: "a1", role: "assistant", order: 1, text: "LATE", endControl: readyEnd }),
+        ],
+      }),
+      evidence({
+        turns: [
+          turn({ id: "u1", role: "user", order: 0 }),
+          turn({ id: "a1", role: "assistant", order: 1, text: "LATE", endControl: readyEnd }),
+          turn({ id: "u2", role: "user", order: 2 }),
+          turn({ id: "a2", role: "assistant", order: 3, text: "SECOND", endControl: readyEnd }),
+        ],
+      }),
+    ];
+    const second = scripted([secondReads[0]!, secondReads[1]!, secondReads[1]!, secondReads[1]!]);
+    const next = await runChatGptTurn(second.page, "第二问", second.timing);
+    assert.deepEqual(next, { ok: true, body: "SECOND" });
+    assert.equal(second.requested.some((ids) => ids.includes("a1")), false);
+  });
+
+  it("地址规则只承认根路径和 /c/id，不猜测其他路径", () => {
+    assert.deepEqual(parseSessionUrl("https://chatgpt.com/"), { state: "ready", kind: "draft" });
+    assert.deepEqual(parseSessionUrl("https://chatgpt.com/c/abc"), { state: "ready", kind: "conversation", id: "abc" });
+    const unrecognized = parseSessionUrl("https://chatgpt.com/gpts");
+    assert.equal(unrecognized.state, "ready");
+    if (unrecognized.state === "ready") {
+      assert.equal(unrecognized.kind, "unrecognized");
+    }
+    const baseline = parseSessionUrl("https://chatgpt.com/");
+    const next = parseSessionUrl("https://chatgpt.com/c/abc");
+    assert.equal(relateSession(baseline, next, [turn({ id: "u1", role: "user", order: 0 })], new Set()), "extended");
+    assert.equal(relateSession(baseline, next, [], new Set()), "unproven");
+    assert.equal(
+      relateSession(parseSessionUrl("https://chatgpt.com/c/aaa"), parseSessionUrl("https://chatgpt.com/c/bbb"), [], new Set()),
+      "switched",
+    );
   });
 });

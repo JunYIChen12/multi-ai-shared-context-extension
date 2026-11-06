@@ -16,7 +16,9 @@ describe("扩展单标签页链路", () => {
     const adapter = createChatGptAdapter(
       createChatGptTabTransport(42, {
         async sendToTab(tabId, request) {
-          sent.push({ tabId, request });
+          if (request.type === "ask") {
+            sent.push({ tabId, request });
+          }
           return { ok: true, body: "CHATGPT_LIVE_OK" };
         },
       }),
@@ -29,12 +31,13 @@ describe("扩展单标签页链路", () => {
     const ran = await runIndependentRound(created.session, options);
     assert.equal(ran.ok, true);
     if (!ran.ok) return;
-    assert.deepEqual(sent, [
-      {
-        tabId: 42,
-        request: { channel: CHATGPT_CHANNEL, type: "ask", prompt: "只回复 CHATGPT_LIVE_OK" },
-      },
-    ]);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.tabId, 42);
+    assert.equal(sent[0]?.request.channel, CHATGPT_CHANNEL);
+    assert.equal(sent[0]?.request.type, "ask");
+    assert.equal(sent[0]?.request.prompt, "只回复 CHATGPT_LIVE_OK");
+    assert.equal(typeof sent[0]?.request.requestId, "string");
+    assert.equal((sent[0]?.request.requestId.length ?? 0) > 0, true);
     assert.equal(ran.session.messages.at(-1)?.sourceKind, "provider");
     assert.equal(ran.session.messages.at(-1)?.body, "CHATGPT_LIVE_OK");
 
