@@ -58,6 +58,49 @@ describe("ChatGPT 单轮状态机", () => {
     assert.deepEqual(result, { ok: true, body: "CHATGPT_LIVE_OK" });
   });
 
+  it("等待发送按钮在输入状态更新后可用再提交", async () => {
+    let sendReady = false;
+    let statusIndex = 0;
+    const events: string[] = [];
+    const statuses: ChatGptPageStatus[] = [
+      { assistantCount: 0, isGenerating: false },
+      { assistantCount: 0, isGenerating: true },
+      { assistantCount: 1, isGenerating: false },
+      { assistantCount: 1, isGenerating: false },
+    ];
+    const result = await runChatGptTurn(
+      {
+        status() {
+          const status = statuses[Math.min(statusIndex, statuses.length - 1)];
+          statusIndex += 1;
+          return status ?? { assistantCount: 0, isGenerating: false };
+        },
+        writePrompt() {
+          events.push("write");
+          return true;
+        },
+        submit() {
+          events.push("submit");
+          return sendReady;
+        },
+        latestAssistantText() {
+          return "REPLY";
+        },
+      },
+      "问题",
+      {
+        ...timing,
+        async wait() {
+          events.push("wait");
+          sendReady = true;
+        },
+      },
+    );
+
+    assert.deepEqual(result, { ok: true, body: "REPLY" });
+    assert.deepEqual(events.slice(0, 3), ["write", "wait", "submit"]);
+  });
+
   it("拒绝忙碌页面、空问题和缺失控件", async () => {
     const busy = await runChatGptTurn(
       page({ statuses: [{ assistantCount: 0, isGenerating: true }] }),

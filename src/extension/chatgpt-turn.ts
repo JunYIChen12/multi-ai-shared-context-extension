@@ -44,6 +44,7 @@ export async function runChatGptTurn(
   if (!page.writePrompt(trimmed)) {
     return failure("prompt_missing", "未找到 ChatGPT 输入框");
   }
+  await timing.wait();
   if (!page.submit()) {
     return failure("send_missing", "未找到可用的 ChatGPT 发送按钮");
   }
