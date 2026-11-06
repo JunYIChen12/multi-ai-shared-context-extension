@@ -2,7 +2,7 @@
   "name": "multi-ai-shared-context",
   "version": "0.0.1",
   "private": true,
-  "description": "多模型共享上下文的轻量工程基础。Chrome 扩展只是候选壳，尚未接入真实网页。",
+  "description": "多模型共享上下文 Chrome 扩展的轻量工程基础，尚未接入真实网页。",
   "type": "module",
   "engines": {
     "node": ">=22"

@@ -1,5 +1,5 @@
 name: 缺陷
-description: 报告工程基础或候选壳的实际错误
+description: 报告工程基础或 Chrome 扩展工程壳的实际错误
 title: "缺陷："
 body:
   - type: textarea

@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "多模型共享上下文（候选壳）",
+  "name": "多模型共享上下文（工程壳）",
   "version": "0.0.1",
-  "description": "候选验证壳，不是已选定产品。未接入 ChatGPT、Grok、Gemini 网页。",
+  "description": "Chrome 扩展工程壳，尚未接入 ChatGPT、Grok、Gemini 网页。",
   "action": {
     "default_popup": "popup.html",
-    "default_title": "多模型协作候选壳（未接入）"
+    "default_title": "多模型协作工程壳（未接入）"
   },
   "permissions": [],
   "host_permissions": []
