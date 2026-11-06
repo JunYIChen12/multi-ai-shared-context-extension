@@ -30,6 +30,20 @@ export interface ChatGptTransport {
   send(request: ChatGptAskRequest): Promise<unknown>;
 }
 
+export interface ChatGptTabMessagePort {
+  sendToTab(tabId: number, request: ChatGptAskRequest): Promise<unknown>;
+}
+
+export interface ChatGptConnectionPort {
+  getActiveTab(): Promise<{ id?: number; url?: string } | null>;
+  injectScript(tabId: number, filename: string): Promise<void>;
+  openDiscussion(path: string): Promise<void>;
+}
+
+export type ChatGptConnectionResult =
+  | { ok: true }
+  | { ok: false; code: "no_active_tab" | "not_chatgpt" | "connection_failed"; message: string };
+
 const ERROR_CODES = new Set<ChatGptErrorCode>([
   "busy",
   "prompt_missing",
@@ -65,6 +79,17 @@ export function createChatGptAdapter(transport: ChatGptTransport): ProviderAdapt
   };
 }
 
+export function createChatGptTabTransport(tabId: number, port: ChatGptTabMessagePort): ChatGptTransport {
+  if (!Number.isSafeInteger(tabId) || tabId <= 0) {
+    throw new Error("ChatGPT tab ID 无效");
+  }
+  return {
+    send(request) {
+      return port.sendToTab(tabId, request);
+    },
+  };
+}
+
 export function isChatGptUrl(raw: string | undefined): boolean {
   if (!raw) {
     return false;
@@ -91,6 +116,24 @@ export function readChatGptTabId(search: string): number | null {
   }
   const tabId = Number(raw);
   return Number.isSafeInteger(tabId) && tabId > 0 ? tabId : null;
+}
+
+export async function connectActiveChatGptTab(port: ChatGptConnectionPort): Promise<ChatGptConnectionResult> {
+  try {
+    const tab = await port.getActiveTab();
+    if (!tab || !Number.isSafeInteger(tab.id) || (tab.id ?? 0) <= 0) {
+      return { ok: false, code: "no_active_tab", message: "没有可连接的当前标签页" };
+    }
+    if (!isChatGptUrl(tab.url)) {
+      return { ok: false, code: "not_chatgpt", message: "请先打开并登录 https://chatgpt.com/" };
+    }
+    const tabId = tab.id as number;
+    await port.injectScript(tabId, "chatgpt-content.js");
+    await port.openDiscussion(discussionPath(tabId));
+    return { ok: true };
+  } catch {
+    return { ok: false, code: "connection_failed", message: "无法临时连接 ChatGPT 标签页，请重试" };
+  }
 }
 
 function toAskRequest(request: ProviderRequest): ChatGptAskRequest {

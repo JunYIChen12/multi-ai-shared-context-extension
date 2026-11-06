@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  connectActiveChatGptTab,
   createChatGptAdapter,
   discussionPath,
   isChatGptUrl,
   readChatGptTabId,
+  type ChatGptConnectionPort,
   type ChatGptTransport,
 } from "../src/extension/chatgpt-connector.js";
 import type { ProviderRequest } from "../src/core/types.js";
@@ -21,6 +23,20 @@ function transport(result: unknown): ChatGptTransport {
   return {
     async send() {
       return result;
+    },
+  };
+}
+
+function connectionPort(tab: { id?: number; url?: string } | null, injects: string[], opens: string[]): ChatGptConnectionPort {
+  return {
+    async getActiveTab() {
+      return tab;
+    },
+    async injectScript(tabId, filename) {
+      injects.push(`${tabId}:${filename}`);
+    },
+    async openDiscussion(path) {
+      opens.push(path);
     },
   };
 }
@@ -84,5 +100,53 @@ describe("ChatGPT 连接器协议", () => {
     ).respond({ ...request, phase: "cross_review", round: 2 });
     assert.equal(response.status, "failed");
     assert.equal(response.error?.code, "unsupported_phase");
+  });
+
+  it("只把当前 ChatGPT 标签页临时连接到讨论页", async () => {
+    const injects: string[] = [];
+    const opens: string[] = [];
+    const connected = await connectActiveChatGptTab(
+      connectionPort({ id: 42, url: "https://chatgpt.com/c/new" }, injects, opens),
+    );
+    assert.deepEqual(connected, { ok: true });
+    assert.deepEqual(injects, ["42:chatgpt-content.js"]);
+    assert.deepEqual(opens, ["discussion.html?chatgptTab=42"]);
+
+    const missing = await connectActiveChatGptTab(connectionPort(null, [], []));
+    assert.deepEqual(missing, {
+      ok: false,
+      code: "no_active_tab",
+      message: "没有可连接的当前标签页",
+    });
+
+    const wrongSite = await connectActiveChatGptTab(
+      connectionPort({ id: 7, url: "https://example.com/" }, [], []),
+    );
+    assert.deepEqual(wrongSite, {
+      ok: false,
+      code: "not_chatgpt",
+      message: "请先打开并登录 https://chatgpt.com/",
+    });
+  });
+
+  it("脚本注入失败时不伪装成已连接", async () => {
+    const opened: string[] = [];
+    const result = await connectActiveChatGptTab({
+      async getActiveTab() {
+        return { id: 9, url: "https://chatgpt.com/" };
+      },
+      async injectScript() {
+        throw new Error("blocked");
+      },
+      async openDiscussion(path) {
+        opened.push(path);
+      },
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      code: "connection_failed",
+      message: "无法临时连接 ChatGPT 标签页，请重试",
+    });
+    assert.deepEqual(opened, []);
   });
 });
