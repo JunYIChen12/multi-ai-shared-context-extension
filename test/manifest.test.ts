@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, readFileSync as readText } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -49,5 +50,19 @@ describe("扩展壳边界", () => {
       const source = readText(path.join(extensionDir, file), "utf8");
       assert.equal(/innerHTML|document\.cookie|chrome\.cookies|eval\(/.test(source), false, file);
     }
+  });
+
+  it("构建按需注入的 ChatGPT 内容脚本且不声明常驻内容脚本", () => {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/build.ts"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.doesNotThrow(() => readFileSync(path.join(root, "dist/extension/chatgpt-content.js")));
+
+    const manifest = JSON.parse(readFileSync(path.join(root, "dist/extension/manifest.json"), "utf8")) as {
+      content_scripts?: unknown;
+    };
+    assert.equal(manifest.content_scripts, undefined);
   });
 });
