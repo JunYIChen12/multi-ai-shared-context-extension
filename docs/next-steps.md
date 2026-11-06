@@ -4,11 +4,26 @@
 
 ## 已经停在这里
 
-工程基础可以类型检查、单元测试和构建。产品形态已确定为 Chrome 扩展，但当前目录仍只是工程壳。三家网页都未接入。MOCK 只是演示数据。
+工程基础可以类型检查、单元测试和构建；当前另有实验性的 ChatGPT 单标签页连接器，但真实链路未验收通过，因此还不是可用产品。Grok 和 Gemini 未接入，MOCK 只是演示数据。
+
+在提交 `375cce437315f024ff47393565017785ed91a1e6`、Chrome 156.0.8078.81 上，固定的无敏感测试问题已发送，网页显示 `CHATGPT_LIVE_OK`；扩展返回 `ChatGPT 未在限定时间内开始生成`，没有成功 provider 记录。Task 6 未完成，真实成功与 Markdown/JSONL 文件验收均未完成。Issue #2 保持开放；[复审评论 6676176718](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/2#issuecomment-6676176718)。
 
 ## 1. 单家已登录网页链路探针
 
 这是合并初始化之后的第一件事。只做一家，建议先选用户当前最好登录、页面结构相对稳定的一家。不要三家一起做。
+
+### 当前阻塞
+
+观察事实：
+
+- 本轮已对 ChatGPT 做两次真实 DOM 路线尝试。第一次失败表现为发送按钮状态竞态；修正后第二次仍返回 `ChatGPT 未在限定时间内开始生成`，尽管网页显示固定回复 `CHATGPT_LIVE_OK`。
+- 只读取证中，`[data-message-author-role="assistant"]` 数量为 0；回复祖先链没有 `data-message-author-role`、`data-message-id`、`role="article"` 或稳定 `data-testid`，主要只有生成类名。
+- 在提交 `375cce4` 上，`npm run check` 的类型检查、28/28 测试和构建通过。`npm ci` 因系统 npm 缺少 `./cache/policy.js` 失败；这与页面链路失败分开。
+
+判断与决定：
+
+- 已达到既定 DOM 路线停止条件。停止当前 DOM 路线，不再进行第三次选择器或时序猜测，也不扩大权限。
+- 恢复开发前必须重新评审以下选项：先证明稳定且隐私安全的锚点；改为用户明确选取/确认回复的半自动路线；或暂停等待稳定公开界面契约。未经重新评审，不继续第 1 步实现。
 
 前置依赖：
 

@@ -2,15 +2,18 @@
 
 ## 目标
 
-按 Issue #2 已批准范围，实现 ChatGPT 单标签页临时连接与本地 Markdown/JSONL 留痕。
+按 Issue #2 已批准范围，实现 ChatGPT 单标签页临时连接与本地 Markdown/JSONL 留痕；真实链路和文件验收通过后才算完成。
 
 ## 基线
 
 - 仓库：`JunYIChen12/multi-ai-shared-context-extension`
 - 分支：`feature/chatgpt-single-tab`
-- 起点：`7139779e91e1206948c898bbea220acd9dd50e0e`
+- 实现起点：`7139779e91e1206948c898bbea220acd9dd50e0e`
+- 当前状态参考：`375cce437315f024ff47393565017785ed91a1e6`
 - 环境：Windows，Google Chrome 156.0.8078.81，Node >=22
-- 基线验证：类型检查通过，12/12 单元测试通过，扩展构建通过。
+- 初始基线验证：类型检查通过，12/12 单元测试通过，扩展构建通过。
+- 当前提交 `375cce4` 的 `npm run check`：类型检查、28/28 测试和扩展构建通过。
+- 当前环境的 `npm ci` 因系统 npm 缺少 `./cache/policy.js` 失败；这是 npm 安装问题，与网页链路失败分开记录。
 
 ## 已批准边界
 
@@ -35,6 +38,21 @@
 - [x] Task 4：内容脚本边界。
 - [x] Task 5：popup/讨论页集成。
 - [ ] Task 6：真实浏览器和文件验收。
+
+### Task 6 当前结果：阻塞，未完成
+
+观察事实：
+
+- 在 Chrome 156.0.8078.81 中，固定的无敏感测试问题已真实发送；网页显示固定回复 `CHATGPT_LIVE_OK`，但扩展返回 `ChatGPT 未在限定时间内开始生成`，没有成功的 provider 记录。
+- 只读取证中，`[data-message-author-role="assistant"]` 数量为 0；该回复的祖先链没有 `data-message-author-role`、`data-message-id`、`role="article"` 或稳定 `data-testid`，主要只有生成类名。
+- 第一次真实失败是发送按钮状态竞态。修正后第二次仍未通过，扩展没有检测到生成开始。
+- 尚未取得真实成功记录，也未完成本地 Markdown/JSONL 文件验收。
+
+判断与决定：
+
+- 上述两次 DOM 路线尝试已达到既定停止条件。暂停 DOM 路线；不进行第三次选择器或时序猜测，也不扩大权限。
+- Issue #2 保持开放。复审评论：[Issue #2 评论 6676176718](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/2#issuecomment-6676176718)。
+- 恢复开发前先重新评审：证明稳定且隐私安全的 DOM 锚点；或改为用户明确选取/确认回复的半自动路线；或暂停等待稳定公开界面契约。
 
 ## 停止条件
 
