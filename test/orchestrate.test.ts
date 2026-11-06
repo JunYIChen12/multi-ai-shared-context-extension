@@ -26,6 +26,30 @@ async function started(prompt: string, opts: OrchestratorOptions): Promise<Sessi
 }
 
 describe("独立回答", () => {
+  it("live 完成回复保存为可追踪的 provider 观点", async () => {
+    const live: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "complete", body: "CHATGPT_LIVE_OK" };
+      },
+    };
+    const opts = options([live]);
+    const ran = await runIndependentRound(await started("真实链路", opts), opts);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) {
+      return;
+    }
+    const reply = ran.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.ok(reply);
+    assert.equal(reply.status, "complete");
+    assert.equal(reply.sourceKind, "provider");
+    assert.equal(reply.adapterMode, "live");
+    assert.equal(reply.body, "CHATGPT_LIVE_OK");
+    assert.equal(isInjectableOpinion(reply), true);
+    assert.match(contractViolation({ mode: "live", status: "complete", body: "" }) ?? "", /正文/);
+  });
+
   it("默认适配器全部未接入，且不会变成可注入观点", async () => {
     const opts = options(defaultAdapters());
     const session = await started("同一个问题", opts);

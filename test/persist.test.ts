@@ -5,7 +5,7 @@ import { outcomeHeadline } from "../src/core/labels.js";
 import { createSession, runIndependentRound } from "../src/core/orchestrate.js";
 import { exportSession, parseSessionFile, parseSessionJsonl, sessionToMarkdown } from "../src/core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../src/core/providers.js";
-import type { Session } from "../src/core/types.js";
+import type { ProviderAdapter, Session } from "../src/core/types.js";
 import { MAX_IMPORT_CHARS } from "../src/core/types.js";
 
 async function sample(): Promise<Session> {
@@ -27,6 +27,36 @@ async function sample(): Promise<Session> {
 }
 
 describe("本地导出与恢复", () => {
+  it("live 记录可导出并以未验证属性恢复", async () => {
+    const live: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "complete", body: "CHATGPT_LIVE_OK" };
+      },
+    };
+    const options = { clock: createTestClock(), adapters: [live], timeoutMs: 1000, maxRounds: 2 };
+    const created = createSession("真实留痕", options);
+    assert.equal(created.ok, true);
+    if (!created.ok) {
+      return;
+    }
+    const ran = await runIndependentRound(created.session, options);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) {
+      return;
+    }
+    const parsed = parseSessionJsonl(exportSession(ran.session).jsonl);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) {
+      return;
+    }
+    const reply = parsed.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(reply?.adapterMode, "live");
+    assert.equal(reply?.sourceKind, "provider");
+    assert.equal(reply?.trust, "local_unverified_import");
+  });
+
   it("超大文件在读取正文前就被拒绝", async () => {
     let reads = 0;
     const parsed = await parseSessionFile({

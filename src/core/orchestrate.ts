@@ -258,7 +258,12 @@ function messageFromResponse(
     role: failed ? "system" : "assistant",
     body: failed ? "" : response.body,
     status: response.status,
-    sourceKind: response.mode === "mock" && response.status === "complete" ? "mock" : "system",
+    sourceKind:
+      response.status !== "complete"
+        ? "system"
+        : response.mode === "mock"
+          ? "mock"
+          : "provider",
     adapterMode: response.mode,
     errorCode: response.error?.code ?? null,
     errorMessage: response.error?.message ?? null,
@@ -271,6 +276,9 @@ export function contractViolation(response: ProviderResponse): string | null {
   }
   if (response.mode === "mock" && response.status === "complete" && !response.body.startsWith(MOCK_PREFIX)) {
     return "MOCK 完成回复必须以 [MOCK] 开头";
+  }
+  if (response.mode === "live" && response.status === "complete" && !response.body.trim()) {
+    return "live 完成回复必须有正文";
   }
   if (response.body.length > MAX_MESSAGE_BODY_CHARS) {
     return "适配器回复超过长度上限";

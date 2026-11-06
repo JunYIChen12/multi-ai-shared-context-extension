@@ -36,8 +36,7 @@ export type MessageStatus =
  */
 export type SourceKind = "user" | "mock" | "provider" | "system";
 
-/** 当前代码只存在这两种适配器。没有 live。 */
-export type AdapterMode = "mock" | "unimplemented";
+export type AdapterMode = "mock" | "unimplemented" | "live";
 
 export type Trust = "created_by_core" | "local_unverified_import";
 
