@@ -1,4 +1,10 @@
 import { CHATGPT_CHANNEL, type ChatGptAskRequest, type ChatGptAskResult } from "./chatgpt-connector.js";
+import {
+  CHATGPT_PROMPT_SELECTOR,
+  CHATGPT_SEND_SELECTOR,
+  CHATGPT_STOP_SELECTOR,
+  lastVisible,
+} from "./chatgpt-dom.js";
 import { runChatGptTurn, type ChatGptPagePort } from "./chatgpt-turn.js";
 
 const scope = globalThis as typeof globalThis & { __multiAiChatGptListenerInstalled?: boolean };
@@ -20,11 +26,11 @@ const chatGptPage: ChatGptPagePort = {
   status() {
     return {
       assistantCount: document.querySelectorAll('[data-message-author-role="assistant"]').length,
-      isGenerating: document.querySelector('[data-testid="stop-button"]') !== null,
+      isGenerating: lastVisible(document.querySelectorAll<HTMLElement>(CHATGPT_STOP_SELECTOR)) !== null,
     };
   },
   writePrompt(prompt) {
-    const input = document.querySelector<HTMLElement>("#prompt-textarea");
+    const input = lastVisible(document.querySelectorAll<HTMLElement>(CHATGPT_PROMPT_SELECTOR));
     if (!input) {
       return false;
     }
@@ -37,7 +43,7 @@ const chatGptPage: ChatGptPagePort = {
     return true;
   },
   submit() {
-    const button = document.querySelector<HTMLButtonElement>('[data-testid="send-button"]');
+    const button = lastVisible(document.querySelectorAll<HTMLButtonElement>(CHATGPT_SEND_SELECTOR));
     if (!button || button.disabled) {
       return false;
     }
