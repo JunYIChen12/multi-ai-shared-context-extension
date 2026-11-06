@@ -1,12 +1,19 @@
 import { CHATGPT_CHANNEL, type ChatGptAskResult, type ChatGptCancelRequest, type ChatGptAskRequest } from "./chatgpt-connector.js";
 import { createDomEvidencePort } from "./chatgpt-dom.js";
 import { createCollectionGate } from "./chatgpt-dispatch.js";
-import { DEFAULT_CHATGPT_TIMING, runChatGptTurn } from "./chatgpt-turn.js";
+import { DEFAULT_CHATGPT_TIMING, createSendLedger, runChatGptTurn } from "./chatgpt-turn.js";
 
 const scope = globalThis as typeof globalThis & { __multiAiChatGptListenerInstalled?: boolean };
+const sendLedger = createSendLedger();
 
 const gate = createCollectionGate((prompt, signal) =>
-  runChatGptTurn(createDomEvidencePort(() => document, () => location.href), prompt, DEFAULT_CHATGPT_TIMING, signal),
+  runChatGptTurn(
+    createDomEvidencePort(() => document, () => location.href),
+    prompt,
+    DEFAULT_CHATGPT_TIMING,
+    signal,
+    sendLedger,
+  ),
 );
 
 if (!scope.__multiAiChatGptListenerInstalled) {

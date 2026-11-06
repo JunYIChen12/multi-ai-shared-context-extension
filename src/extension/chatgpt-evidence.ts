@@ -49,6 +49,7 @@ export type TerminalCode =
 export interface CollectionMemory {
   baselineTurnIds: ReadonlySet<string>;
   baselineSession: SessionIdentity;
+  bornOnDraftUserId: string | null;
   stopClicked: boolean;
   attributedUserId: string | null;
   attributedAssistantId: string | null;
@@ -85,6 +86,7 @@ const MESSAGES = {
   tooLarge: "ChatGPT 回复超过本地记录上限",
   empty: "本次回复已有结束信号但正文为空",
   deadline: "观察结束时仍没有充分的归属和自然结束证据",
+  ambiguous: "还有未对应的发送，不能确定新轮次属于本次",
 } as const;
 
 export function parseSessionUrl(raw: string): SessionIdentity {
@@ -109,38 +111,37 @@ export function parseSessionUrl(raw: string): SessionIdentity {
 }
 
 export function relateSession(
-  baseline: SessionIdentity,
+  pinned: SessionIdentity,
   current: SessionIdentity,
+  bornOnDraftUserId: string | null,
   turns: readonly StructuralTurn[],
-  baselineTurnIds: ReadonlySet<string>,
 ): "same" | "extended" | "switched" | "unproven" {
-  if (baseline.state !== "ready" || current.state !== "ready") {
+  if (pinned.state !== "ready" || current.state !== "ready") {
     return "unproven";
   }
-  if (baseline.kind === "unrecognized" || current.kind === "unrecognized") {
+  if (pinned.kind === "unrecognized" || current.kind === "unrecognized") {
     return "unproven";
   }
-  if (baseline.kind === "draft" && current.kind === "draft") {
+  if (pinned.kind === "draft" && current.kind === "draft") {
     return "same";
   }
-  if (baseline.kind === "conversation" && current.kind === "conversation") {
-    return baseline.id === current.id ? "same" : "switched";
+  if (pinned.kind === "conversation" && current.kind === "conversation") {
+    return pinned.id === current.id ? "same" : "switched";
   }
-  if (baseline.kind === "conversation" && current.kind === "draft") {
+  if (pinned.kind === "conversation" && current.kind === "draft") {
     return "switched";
   }
-  if (baseline.kind === "draft" && current.kind === "conversation") {
-    const newUsers = turns.filter((turn) => turn.role === "user" && !baselineTurnIds.has(turn.id));
-    return newUsers.length === 1 ? "extended" : "unproven";
+  if (pinned.kind === "draft" && current.kind === "conversation") {
+    const stillThere = Boolean(
+      bornOnDraftUserId && turns.some((turn) => turn.role === "user" && turn.id === bornOnDraftUserId),
+    );
+    return stillThere ? "extended" : "unproven";
   }
   return "unproven";
 }
 
 export function assessBaseline(evidence: PageEvidence): { code: TerminalCode; message: string } | null {
-  if (evidence.composerStop.state === "unreadable") {
-    return { code: "unknown", message: MESSAGES.baselineStop };
-  }
-  if (evidence.composerStop.value) {
+  if (evidence.composerStop.state === "ready" && evidence.composerStop.value) {
     return { code: "busy", message: MESSAGES.busy };
   }
   if (evidence.turns.state === "unreadable") {
@@ -152,10 +153,7 @@ export function assessBaseline(evidence: PageEvidence): { code: TerminalCode; me
   if (evidence.session.state !== "ready" || evidence.session.kind === "unrecognized") {
     return { code: "unknown", message: MESSAGES.baselineSession };
   }
-  if (evidence.pageError.state === "unreadable") {
-    return { code: "unknown", message: MESSAGES.baselineError };
-  }
-  if (evidence.pageError.value === "present") {
+  if (evidence.pageError.state === "ready" && evidence.pageError.value === "present") {
     return { code: "page_error", message: MESSAGES.pageError };
   }
   return null;
@@ -166,6 +164,7 @@ export function memoryFromBaseline(evidence: PageEvidence, stableChecks: number)
   return {
     baselineTurnIds: new Set(turns.map((turn) => turn.id)),
     baselineSession: evidence.session,
+    bornOnDraftUserId: null,
     stopClicked: false,
     attributedUserId: null,
     attributedAssistantId: null,
@@ -181,6 +180,7 @@ export function assessPoll(
   evidence: PageEvidence,
   stopClicked: boolean,
   requestedTextIds: readonly string[],
+  canAttribute: boolean,
 ): PollAssessment {
   const clicked = memory.stopClicked || stopClicked;
   if (clicked) {
@@ -189,12 +189,7 @@ export function assessPoll(
   if (evidence.pageError.state === "ready" && evidence.pageError.value === "present") {
     return terminal("page_error", MESSAGES.pageError);
   }
-  if (
-    evidence.turns.state !== "ready" ||
-    evidence.session.state !== "ready" ||
-    evidence.composerStop.state !== "ready" ||
-    evidence.pageError.state !== "ready"
-  ) {
+  if (evidence.turns.state !== "ready" || evidence.session.state !== "ready") {
     return terminal("unknown", MESSAGES.unreadable);
   }
   if (evidence.session.kind === "unrecognized") {
@@ -204,23 +199,31 @@ export function assessPoll(
     return terminal("unknown", MESSAGES.duplicateIds);
   }
 
-  const continuity = relateSession(
-    memory.baselineSession,
-    evidence.session,
-    evidence.turns.value,
-    memory.baselineTurnIds,
-  );
+  const turns = evidence.turns.value;
+  const newUsers = turns.filter((turn) => turn.role === "user" && !memory.baselineTurnIds.has(turn.id));
+  let bornOnDraftUserId = memory.bornOnDraftUserId;
+  const onDraft = memory.baselineSession.state === "ready"
+    && memory.baselineSession.kind === "draft"
+    && evidence.session.kind === "draft";
+  if (onDraft && newUsers.length === 1 && canAttribute) {
+    const id = newUsers[0]?.id ?? null;
+    if (id && !bornOnDraftUserId) {
+      bornOnDraftUserId = id;
+    }
+  }
+  const continuity = relateSession(memory.baselineSession, evidence.session, bornOnDraftUserId, turns);
   if (continuity === "switched") {
     return terminal("navigation", MESSAGES.switched);
   }
   if (continuity === "unproven") {
     return terminal("unknown", MESSAGES.unproven);
   }
-
-  const turns = evidence.turns.value;
-  const newUsers = turns.filter((turn) => turn.role === "user" && !memory.baselineTurnIds.has(turn.id));
+  const pinnedSession = continuity === "extended" ? evidence.session : memory.baselineSession;
   if (newUsers.length > 1) {
     return terminal("unknown", MESSAGES.manyUsers);
+  }
+  if (newUsers.length === 1 && !canAttribute) {
+    return terminal("unknown", MESSAGES.ambiguous);
   }
 
   let userId = memory.attributedUserId;
@@ -253,6 +256,8 @@ export function assessPoll(
 
   const next: CollectionMemory = {
     ...memory,
+    baselineSession: pinnedSession,
+    bornOnDraftUserId,
     stopClicked: false,
     attributedUserId: userId,
     attributedAssistantId: assistantId,
@@ -272,8 +277,8 @@ export function assessPoll(
   const requested = requestedTextIds.includes(assistantId);
   const text = requested ? (assistant.text ?? "").trim() : "";
   const endReady = assistant.endControl.state === "ready";
-  const stopIdle = evidence.composerStop.value === false;
-  const errorClear = evidence.pageError.value === "none";
+  const stopIdle = evidence.composerStop.state === "ready" && evidence.composerStop.value === false;
+  const errorClear = evidence.pageError.state === "ready" && evidence.pageError.value === "none";
   const shellReady = endReady && stopIdle && errorClear;
   if (!requested || !shellReady) {
     return { kind: "pending", memory: { ...next, sawEmptyReady: false } };

@@ -21,11 +21,21 @@ export const DEFAULT_CHATGPT_TIMING: ChatGptTurnTiming = {
   wait: (signal) => abortableDelay(250, signal),
 };
 
+/** 同一标签页上尚未对上新用户轮次的发送次数。不是页面身份，只用来拒绝含糊归属。 */
+export interface SendLedger {
+  unmatched: number;
+}
+
+export function createSendLedger(): SendLedger {
+  return { unmatched: 0 };
+}
+
 export async function runChatGptTurn(
   page: ChatGptEvidencePort,
   prompt: string,
   timing: ChatGptTurnTiming = DEFAULT_CHATGPT_TIMING,
   signal: AbortSignal = new AbortController().signal,
+  ledger: SendLedger = createSendLedger(),
 ): Promise<ChatGptAskResult> {
   const trimmed = prompt.trim();
   if (!trimmed || trimmed.length > MAX_MESSAGE_BODY_CHARS) {
@@ -38,9 +48,6 @@ export async function runChatGptTurn(
   let stopClicked = false;
   let disarm = () => undefined as void;
   try {
-    disarm = page.watchStop(() => {
-      stopClicked = true;
-    });
     const baseline = page.read({ textTurnIds: [] });
     const blocked = assessBaseline(baseline);
     if (blocked) {
@@ -53,14 +60,21 @@ export async function runChatGptTurn(
     if (signal.aborted) {
       return failure("cancelled", "采集已取消，不会再发送或提交结果");
     }
-    if (stopClicked) {
-      return failure("stopped", "已观察到本轮停止动作，残留文本不算正常结束");
+    const committed = page.read({ textTurnIds: [] });
+    const blockedAgain = assessBaseline(committed);
+    if (blockedAgain) {
+      return failure(blockedAgain.code, blockedAgain.message);
     }
     if (!page.submit()) {
       return failure("send_missing", "未找到可用的 ChatGPT 发送按钮");
     }
+    ledger.unmatched += 1;
+    const canAttribute = ledger.unmatched === 1;
+    disarm = page.watchStop(() => {
+      stopClicked = true;
+    });
 
-    let memory = memoryFromBaseline(baseline, timing.stableChecks);
+    let memory = memoryFromBaseline(committed, timing.stableChecks);
     let textTurnIds: string[] = [];
     for (let poll = 0; poll < timing.polls; poll += 1) {
       await timing.wait(signal);
@@ -68,8 +82,9 @@ export async function runChatGptTurn(
         return failure("cancelled", "采集已取消，不会再发送或提交结果");
       }
       const evidence = page.read({ textTurnIds });
-      const assessment = assessPoll(memory, evidence, stopClicked, textTurnIds);
+      const assessment = assessPoll(memory, evidence, stopClicked, textTurnIds, canAttribute);
       if (assessment.kind === "success") {
+        ledger.unmatched = Math.max(0, ledger.unmatched - 1);
         return { ok: true, body: assessment.body };
       }
       if (assessment.kind === "terminal") {

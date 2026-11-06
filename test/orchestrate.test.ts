@@ -69,6 +69,24 @@ describe("独立回答", () => {
     assert.equal(reply?.sourceKind, "system");
     assert.equal(reply ? outcomeHeadline(reply) : "", "已手停");
     assert.equal(reply ? isInjectableOpinion(reply) : true, false);
+
+    const unknownAdapter: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "failed", body: "未知正文", error: { code: "unknown", message: "证据不足" } };
+      },
+    };
+    const unknownRun = await runIndependentRound(await started("未知", options([unknownAdapter])), options([unknownAdapter]));
+    assert.equal(unknownRun.ok, true);
+    if (!unknownRun.ok) return;
+    const unknownReply = unknownRun.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(unknownReply?.status, "failed");
+    assert.equal(unknownReply?.body, "");
+    assert.equal(unknownReply?.sourceKind, "system");
+    assert.equal(unknownReply?.errorCode, "unknown");
+    assert.equal(unknownReply ? outcomeHeadline(unknownReply) : "", "未知");
+    assert.equal(unknownReply ? isInjectableOpinion(unknownReply) : true, false);
   });
 
   it("外层超时后不接收晚到的完成正文，下一轮不被污染", async () => {

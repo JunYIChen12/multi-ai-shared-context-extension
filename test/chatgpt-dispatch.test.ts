@@ -81,8 +81,7 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
         if (phase === "empty") return empty;
         if (phase === "late") return late;
         secondReads += 1;
-        if (secondReads === 1) return late;
-        if (request.textTurnIds.includes("a2")) return secondShape;
+        if (secondReads <= 2) return late;
         return secondShape;
       },
       writePrompt() {

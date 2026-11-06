@@ -38,6 +38,7 @@ export interface EvidenceQueryRoot {
 export interface EvidenceQueryElement {
   getAttribute(name: string): string | null;
   querySelector(selector: string): EvidenceQueryElement | null;
+  querySelectorAll(selector: string): ArrayLike<EvidenceQueryElement>;
   textContent: string | null;
   getClientRects(): ArrayLike<unknown>;
   closest?(selector: string): unknown;
@@ -86,7 +87,7 @@ export function readPageEvidence(
       endControl: readEndControl(item.node),
     };
     if (requested.has(item.id)) {
-      turn.text = item.node.textContent ?? "";
+      turn.text = readTurnBody(item.node);
     }
     return turn;
   });
@@ -107,8 +108,9 @@ export function watchStopClicks(root: EvidenceQueryRoot, onStop: () => void): ()
     if (!target || typeof target !== "object" || !("closest" in target)) {
       return;
     }
-    const closest = (target as { closest?: (selector: string) => unknown }).closest;
-    if (typeof closest === "function" && closest.call(target, CHATGPT_STOP_SELECTOR)) {
+    const closest = (target as { closest?: (selector: string) => EvidenceQueryElement | null }).closest;
+    const matched = typeof closest === "function" ? closest.call(target, CHATGPT_STOP_SELECTOR) : null;
+    if (matched && typeof matched.getClientRects === "function" && matched.getClientRects().length > 0) {
       onStop();
     }
   };
@@ -158,15 +160,30 @@ function readEndControl(node: EvidenceQueryElement): ReadState<true> {
 }
 
 function readComposerStop(root: EvidenceQueryRoot): ReadState<boolean> {
-  return { state: "ready", value: lastVisible(root.querySelectorAll(CHATGPT_STOP_SELECTOR)) !== null };
+  const controls = asArray(root.querySelectorAll(CHATGPT_STOP_SELECTOR));
+  if (controls.length === 0) {
+    return { state: "unreadable" };
+  }
+  return { state: "ready", value: controls.some((control) => control.getClientRects().length > 0) };
 }
 
 function readPageError(root: EvidenceQueryRoot): ReadState<"none" | "present"> {
-  const alert = root.querySelector(CHATGPT_ERROR_SELECTOR);
-  if (alert && alert.getClientRects().length > 0) {
+  const alerts = asArray(root.querySelectorAll(CHATGPT_ERROR_SELECTOR));
+  if (alerts.some((alert) => alert.getClientRects().length > 0)) {
     return { state: "ready", value: "present" };
   }
-  return { state: "ready", value: "none" };
+  return { state: "unreadable" };
+}
+
+function readTurnBody(node: EvidenceQueryElement): string {
+  let text = node.textContent ?? "";
+  for (const button of asArray(node.querySelectorAll("button"))) {
+    const label = button.textContent ?? "";
+    if (label) {
+      text = text.replace(label, "");
+    }
+  }
+  return text;
 }
 
 function canEdit(element: EvidenceQueryElement): boolean {

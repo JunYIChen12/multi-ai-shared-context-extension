@@ -123,7 +123,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
       ],
       stop: false,
     });
-    const script = scripted([evidence({}), generating, done, done, done]);
+    const script = scripted([evidence({}), evidence({}), generating, done, done, done]);
     const result = await runChatGptTurn(script.page, "只回复 CHATGPT_LIVE_OK", script.timing);
     assert.deepEqual(result, { ok: true, body: "CHATGPT_LIVE_OK" });
     assert.equal(script.submits(), 1);
@@ -137,7 +137,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
       ],
       stop: false,
     });
-    const script = scripted([evidence({}), done, done, done]);
+    const script = scripted([evidence({}), evidence({}), done, done, done]);
     const result = await runChatGptTurn(script.page, "短", script.timing);
     assert.deepEqual(result, { ok: true, body: "OK" });
     assert.equal(script.requested.some((ids) => ids.includes("a1")), true);
@@ -166,7 +166,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     });
     for (const reads of [
       [evidence({ turns: [turn({ id: "a0", role: "assistant", order: 0, text: "OLD", endControl: readyEnd })] }), oldOnly, oldOnly],
-      [evidence({}), missingEnd, missingEnd, missingEnd, missingEnd, missingEnd, missingEnd],
+      [evidence({}), evidence({}), missingEnd, missingEnd, missingEnd, missingEnd, missingEnd, missingEnd],
       [evidence({}), unreadableError],
     ]) {
       const script = scripted(reads);
@@ -212,7 +212,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
         turn({ id: "a9", role: "assistant", order: 3, text: "SAME", endControl: readyEnd }),
       ],
     });
-    const script = scripted([baseline, twoUsers]);
+    const script = scripted([baseline, baseline, twoUsers]);
     const result = await runChatGptTurn(script.page, "SAME", script.timing);
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.code, "unknown");
@@ -247,6 +247,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     });
     const script = scripted([
       evidence({}),
+      evidence({}),
       evidence({
         stop: true,
         turns: [
@@ -268,6 +269,9 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
   });
 
   it("新聊天地址能用同一新用户轮次证明连续，证明不了则未知，换会话则隔离", async () => {
+    const born = evidence({
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
     const extended = evidence({
       url: "https://chatgpt.com/c/new-chat",
       turns: [
@@ -275,19 +279,28 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
         turn({ id: "a1", role: "assistant", order: 1, text: "连续", endControl: readyEnd }),
       ],
     });
-    const continued = scripted([evidence({}), extended, extended, extended]);
+    const continued = scripted([evidence({}), evidence({}), born, extended, extended, extended]);
     const continuedResult = await runChatGptTurn(continued.page, "问题", continued.timing);
     assert.deepEqual(continuedResult, { ok: true, body: "连续" });
 
     const unproven = scripted([
       evidence({}),
-      evidence({ url: "https://chatgpt.com/c/new-chat", turns: [turn({ id: "a0", role: "assistant", order: 0, text: "别人的" })] }),
+      evidence({}),
+      evidence({
+        url: "https://chatgpt.com/c/old-chat",
+        turns: [
+          turn({ id: "u-old", role: "user", order: 0 }),
+          turn({ id: "a-old", role: "assistant", order: 1, text: "旧会话", endControl: readyEnd }),
+        ],
+      }),
     ]);
     const unprovenResult = await runChatGptTurn(unproven.page, "问题", unproven.timing);
     assert.equal(unprovenResult.ok, false);
     if (!unprovenResult.ok) assert.equal(unprovenResult.code, "unknown");
+    assert.equal(JSON.stringify(unprovenResult).includes("旧会话"), false);
 
     const switched = scripted([
+      evidence({ url: "https://chatgpt.com/c/aaa" }),
       evidence({ url: "https://chatgpt.com/c/aaa" }),
       evidence({
         url: "https://chatgpt.com/c/bbb",
@@ -359,7 +372,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
         turn({ id: "a1", role: "assistant", order: 1, text: "  ", endControl: readyEnd }),
       ],
     });
-    const emptyScript = scripted([evidence({}), empty, empty, empty]);
+    const emptyScript = scripted([evidence({}), evidence({}), empty, empty, empty]);
     const emptyResult = await runChatGptTurn(emptyScript.page, "问题", { ...emptyScript.timing, polls: 3 });
     assert.equal(emptyResult.ok, false);
     if (!emptyResult.ok) assert.equal(emptyResult.code, "empty_response");
@@ -376,7 +389,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
         }),
       ],
     });
-    const hugeScript = scripted([evidence({}), huge, huge]);
+    const hugeScript = scripted([evidence({}), evidence({}), huge, huge]);
     const hugeResult = await runChatGptTurn(hugeScript.page, "问题", { ...hugeScript.timing, stableChecks: 1 });
     assert.equal(hugeResult.ok, false);
     if (!hugeResult.ok) assert.equal(hugeResult.code, "response_too_large");
@@ -401,7 +414,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     const cancelled = await pending;
     assert.equal(cancelled.ok, false);
     if (!cancelled.ok) assert.equal(cancelled.code, "cancelled");
-    assert.equal(first.disarmed(), 1);
+    assert.equal(first.disarmed(), 0);
     assert.equal(JSON.stringify(cancelled).includes("LATE"), false);
 
     const secondReads = [
@@ -420,10 +433,112 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
         ],
       }),
     ];
-    const second = scripted([secondReads[0]!, secondReads[1]!, secondReads[1]!, secondReads[1]!]);
+    const second = scripted([secondReads[0]!, secondReads[0]!, secondReads[1]!, secondReads[1]!, secondReads[1]!]);
     const next = await runChatGptTurn(second.page, "第二问", second.timing);
     assert.deepEqual(next, { ok: true, body: "SECOND" });
     assert.equal(second.requested.some((ids) => ids.includes("a1")), false);
+  });
+
+  it("发送前出现的外来轮次和未对上的旧发送迟到，都不能当成这次回复", async () => {
+    const foreign = evidence({
+      turns: [
+        turn({ id: "u-foreign", role: "user", order: 0 }),
+        turn({ id: "a-foreign", role: "assistant", order: 1, text: "外来", endControl: readyEnd }),
+      ],
+    });
+    const ours = evidence({
+      turns: [
+        turn({ id: "u-foreign", role: "user", order: 0 }),
+        turn({ id: "a-foreign", role: "assistant", order: 1, text: "外来", endControl: readyEnd }),
+        turn({ id: "u-ours", role: "user", order: 2 }),
+        turn({ id: "a-ours", role: "assistant", order: 3, text: "本次", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), foreign, ours, ours, ours]);
+    const result = await runChatGptTurn(script.page, "同一个问题", script.timing);
+    assert.deepEqual(result, { ok: true, body: "本次" });
+    assert.equal(script.requested.some((ids) => ids.includes("a-foreign")), false);
+
+    const onlyForeign = scripted([evidence({}), foreign, foreign, foreign]);
+    const missed = await runChatGptTurn(onlyForeign.page, "同一个问题", { ...onlyForeign.timing, polls: 2 });
+    assert.equal(missed.ok, false);
+    assert.equal(JSON.stringify(missed).includes("外来"), false);
+
+    const ledger = { unmatched: 1 };
+    const late = evidence({
+      turns: [
+        turn({ id: "u-late", role: "user", order: 0 }),
+        turn({ id: "a-late", role: "assistant", order: 1, text: "迟到", endControl: readyEnd }),
+      ],
+    });
+    const lateScript = scripted([evidence({}), evidence({}), late, late]);
+    const lateResult = await runChatGptTurn(lateScript.page, "第二问", lateScript.timing, new AbortController().signal, ledger);
+    assert.equal(lateResult.ok, false);
+    if (!lateResult.ok) assert.equal(lateResult.code, "unknown");
+    assert.equal(JSON.stringify(lateResult).includes("迟到"), false);
+  });
+
+  it("钉住 /c/A 之后再进入 B 会隔离", async () => {
+    const born = evidence({ turns: [turn({ id: "u1", role: "user", order: 0 })] });
+    const onA = evidence({
+      url: "https://chatgpt.com/c/A",
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
+    const onB = evidence({
+      url: "https://chatgpt.com/c/B",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "uB", role: "user", order: 1 }),
+        turn({ id: "aB", role: "assistant", order: 2, text: "B的正文", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), evidence({}), born, onA, onB]);
+    const result = await runChatGptTurn(script.page, "问题", { ...script.timing, polls: 3 });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "navigation");
+    assert.equal(JSON.stringify(result).includes("B的正文"), false);
+  });
+
+  it("空问题、缺少输入框，以及写入后等待再提交的顺序仍然成立", async () => {
+    const idle = evidence({});
+    const events: string[] = [];
+    const page: ChatGptEvidencePort = {
+      read() {
+        return idle;
+      },
+      writePrompt() {
+        events.push("write");
+        return true;
+      },
+      submit() {
+        events.push("submit");
+        return false;
+      },
+      watchStop() {
+        return () => undefined;
+      },
+    };
+    const timing: ChatGptTurnTiming = {
+      polls: 1,
+      stableChecks: 1,
+      async wait() {
+        events.push("wait");
+      },
+    };
+    const empty = await runChatGptTurn(page, "   ", timing);
+    assert.equal(empty.ok, false);
+    if (!empty.ok) assert.equal(empty.code, "invalid_request");
+    assert.deepEqual(events, []);
+
+    const missingInput: ChatGptEvidencePort = { ...page, writePrompt: () => false };
+    const missing = await runChatGptTurn(missingInput, "问题", timing);
+    assert.equal(missing.ok, false);
+    if (!missing.ok) assert.equal(missing.code, "prompt_missing");
+
+    const ordered = await runChatGptTurn(page, "问题", timing);
+    assert.equal(ordered.ok, false);
+    if (!ordered.ok) assert.equal(ordered.code, "send_missing");
+    assert.deepEqual(events, ["write", "wait", "submit"]);
   });
 
   it("地址规则只承认根路径和 /c/id，不猜测其他路径", () => {
@@ -434,12 +549,13 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     if (unrecognized.state === "ready") {
       assert.equal(unrecognized.kind, "unrecognized");
     }
-    const baseline = parseSessionUrl("https://chatgpt.com/");
+    const draft = parseSessionUrl("https://chatgpt.com/");
     const next = parseSessionUrl("https://chatgpt.com/c/abc");
-    assert.equal(relateSession(baseline, next, [turn({ id: "u1", role: "user", order: 0 })], new Set()), "extended");
-    assert.equal(relateSession(baseline, next, [], new Set()), "unproven");
+    const born = [turn({ id: "u1", role: "user", order: 0 })];
+    assert.equal(relateSession(draft, next, "u1", born), "extended");
+    assert.equal(relateSession(draft, next, null, born), "unproven");
     assert.equal(
-      relateSession(parseSessionUrl("https://chatgpt.com/c/aaa"), parseSessionUrl("https://chatgpt.com/c/bbb"), [], new Set()),
+      relateSession(parseSessionUrl("https://chatgpt.com/c/aaa"), parseSessionUrl("https://chatgpt.com/c/bbb"), "u1", born),
       "switched",
     );
   });
