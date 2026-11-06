@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { createTestClock } from "../src/core/clock.js";
 import { outcomeHeadline } from "../src/core/labels.js";
 import { createSession, runIndependentRound } from "../src/core/orchestrate.js";
-import { exportSession, parseSessionJsonl, sessionToMarkdown } from "../src/core/persist.js";
+import { exportSession, parseSessionFile, parseSessionJsonl, sessionToMarkdown } from "../src/core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../src/core/providers.js";
 import type { Session } from "../src/core/types.js";
 import { MAX_IMPORT_CHARS } from "../src/core/types.js";
@@ -27,6 +27,20 @@ async function sample(): Promise<Session> {
 }
 
 describe("本地导出与恢复", () => {
+  it("超大文件在读取正文前就被拒绝", async () => {
+    let reads = 0;
+    const parsed = await parseSessionFile({
+      size: MAX_IMPORT_CHARS * 4 + 1,
+      async text() {
+        reads += 1;
+        return "不应读取";
+      },
+    });
+    assert.equal(parsed.ok, false);
+    assert.equal(reads, 0);
+    assert.match(parsed.errors?.join("\n") ?? "", /文件大小超过/);
+  });
+
   it("Markdown 保留原文、MOCK 和未接入，JSONL 可恢复但降级信任", async () => {
     const session = await sample();
     const exported = exportSession(session);

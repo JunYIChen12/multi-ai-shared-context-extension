@@ -20,6 +20,9 @@ export type ParseResult =
   | { ok: true; session: Session }
   | { ok: false; errors: string[] };
 
+// File.text() allocates after decoding, so reject a bounded byte size first.
+const MAX_IMPORT_BYTES = MAX_IMPORT_CHARS * 4;
+
 export function exportSession(session: Session): SessionExport {
   return {
     basename: `${session.requirementId}-${session.id}`,
@@ -77,6 +80,13 @@ export function sessionToMarkdown(session: Session): string {
     lines.push("当前没有可注入的已完成观点。未接入、失败和超时不是模型回答。", "");
   }
   return lines.join("\n");
+}
+
+export async function parseSessionFile(file: { size: number; text(): Promise<string> }): Promise<ParseResult> {
+  if (file.size > MAX_IMPORT_BYTES) {
+    return { ok: false, errors: [`导入文件大小超过 ${MAX_IMPORT_BYTES} 字节`] };
+  }
+  return parseSessionJsonl(await file.text());
 }
 
 export function parseSessionJsonl(text: string): ParseResult {

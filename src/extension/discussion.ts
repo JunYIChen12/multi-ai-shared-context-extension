@@ -1,7 +1,7 @@
 import { systemClock } from "../core/clock.js";
 import { outcomeHeadline, summarizeSession } from "../core/labels.js";
 import { createSession, runCrossReview, runIndependentRound } from "../core/orchestrate.js";
-import { exportSession, parseSessionJsonl } from "../core/persist.js";
+import { exportSession, parseSessionFile } from "../core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
 import { PROVIDER_IDS } from "../core/types.js";
@@ -158,7 +158,7 @@ function downloadCurrent(kind: "markdown" | "jsonl"): void {
 
 async function restoreFromFile(file: File): Promise<void> {
   clearError();
-  const parsed = parseSessionJsonl(await file.text());
+  const parsed = await parseSessionFile(file);
   if (!parsed.ok) {
     showError(parsed.errors.join("\n"));
     return;
