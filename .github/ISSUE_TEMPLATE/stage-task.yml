@@ -1,0 +1,44 @@
+name: 阶段任务
+description: 记录下一阶段的依赖、验收和停止条件
+title: "阶段："
+body:
+  - type: input
+    id: requirement
+    attributes:
+      label: 需求编号
+      placeholder: AI-REQ-20261105-001
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 本阶段要证明什么
+      description: 写可观察的结果，不要把未接入或 MOCK 写成真实模型回复。
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 前置依赖
+      description: 分开写需要用户在场的登录、2FA、额度，以及可以自动跑的工程检查。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收
+    validations:
+      required: true
+  - type: textarea
+    id: stop
+    attributes:
+      label: 停止条件
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: 非目标
+      description: 例如不接另外两家、不接 MCP、不导出 Cookie、不自动搬运 Drive。
+    validations:
+      required: true
