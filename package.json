@@ -1,0 +1,23 @@
+{
+  "name": "multi-ai-shared-context",
+  "version": "0.0.1",
+  "private": true,
+  "description": "多模型共享上下文的轻量工程基础。Chrome 扩展只是候选壳，尚未接入真实网页。",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "build": "node --import tsx scripts/build.ts",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.24",
+    "@types/node": "^22.19.0",
+    "esbuild": "^0.25.11",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

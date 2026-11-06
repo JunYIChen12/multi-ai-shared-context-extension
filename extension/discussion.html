@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>多模型协作候选壳</title>
+    <link rel="stylesheet" href="discussion.css" />
+  </head>
+  <body>
+    <header class="banner">
+      <strong>候选验证壳，不是已选定产品。</strong>
+      <span>未接入 ChatGPT、Grok、Gemini 网页。默认结果不是模型回答。MOCK 只用于演示数据契约。</span>
+    </header>
+    <main>
+      <form id="ask">
+        <label for="prompt">问题</label>
+        <textarea id="prompt" name="prompt" rows="4" required placeholder="输入一次问题。本页不会把它发给任何网站。"></textarea>
+        <fieldset>
+          <legend>参与的来源</legend>
+          <label><input type="checkbox" name="provider" value="chatgpt" checked /> ChatGPT（未接入）</label>
+          <label><input type="checkbox" name="provider" value="grok" checked /> Grok（未接入）</label>
+          <label><input type="checkbox" name="provider" value="gemini" checked /> Gemini（未接入）</label>
+        </fieldset>
+        <div class="actions">
+          <button id="record-gap" type="submit">记录未接入尝试</button>
+          <button id="run-mock" type="button">运行 MOCK 演示</button>
+          <button id="cross" type="button">第二轮交叉讨论</button>
+        </div>
+      </form>
+      <p id="summary" aria-live="polite"></p>
+      <p id="error" role="alert"></p>
+      <section id="transcript" aria-live="polite"></section>
+      <section class="files">
+        <h2>本地文件</h2>
+        <p>导出的是浏览器下载的 Markdown 和 JSONL，不是 chrome.storage。刷新后内存会话会消失，可用 JSONL 恢复。恢复结果一律标成未验证导入。</p>
+        <div class="actions">
+          <button id="export-md" type="button">导出 Markdown</button>
+          <button id="export-jsonl" type="button">导出 JSONL</button>
+          <label class="file">
+            从 JSONL 恢复
+            <input id="import-jsonl" type="file" accept=".jsonl,.txt,application/jsonl,text/plain" />
+          </label>
+        </div>
+      </section>
+    </main>
+    <script src="discussion.js"></script>
+  </body>
+</html>

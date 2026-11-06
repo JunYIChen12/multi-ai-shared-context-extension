@@ -1,0 +1,110 @@
+:root {
+  color: #1c1b19;
+  background: #f7f4ee;
+  font-family: "Segoe UI", "Noto Sans SC", sans-serif;
+  line-height: 1.45;
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+}
+
+body.popup {
+  width: 280px;
+}
+
+.banner {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #c58a12;
+  background: #fff4d6;
+}
+
+main {
+  display: grid;
+  gap: 12px;
+  max-width: 760px;
+}
+
+label[for="prompt"] {
+  display: grid;
+  gap: 6px;
+}
+
+fieldset {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #ddd6c8;
+  background: #fff;
+}
+
+fieldset label,
+.file {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.actions,
+.files .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+button,
+.file {
+  font: inherit;
+}
+
+#summary {
+  min-height: 1.4em;
+}
+
+#error:empty {
+  display: none;
+}
+
+#error {
+  color: #8a1f1f;
+}
+
+article {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-left-width: 4px;
+}
+
+article[data-status="not_connected"],
+article[data-headline="未接入"] {
+  border-left-color: #c58a12;
+}
+
+article[data-kind="mock"] {
+  border-left-color: #6b4ea3;
+  background: #f7f3fb;
+}
+
+article[data-status="failed"],
+article[data-status="timeout"] {
+  border-left-color: #8a1f1f;
+}
+
+pre {
+  white-space: pre-wrap;
+  font: inherit;
+  margin: 0;
+}

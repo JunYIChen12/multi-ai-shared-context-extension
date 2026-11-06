@@ -1,0 +1,24 @@
+name: 缺陷
+description: 报告工程基础或候选壳的实际错误
+title: "缺陷："
+body:
+  - type: textarea
+    id: fact
+    attributes:
+      label: 实际现象
+      description: 写命令、文件和输出。不要把单元测试或 MOCK 描述成三家网页实测。
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: 预期
+    validations:
+      required: true
+  - type: textarea
+    id: check
+    attributes:
+      label: 已运行的检查
+      placeholder: npm run check
+    validations:
+      required: false
