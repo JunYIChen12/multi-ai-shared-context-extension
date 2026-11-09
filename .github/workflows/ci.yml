@@ -14,4 +14,35 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - name: npm run check
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run check 2>&1 | tee check.log
+      - name: 证据摘要
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## 证据摘要"
+            echo
+            echo "- 提交：\`${{ github.event.pull_request.head.sha || github.sha }}\`"
+            echo "- 检查结果：${{ job.status }}"
+            echo
+            echo "### 测试"
+            echo
+            echo '```'
+            grep -E '^(# |ℹ )(tests|pass|fail|cancelled|skipped|todo) ' check.log || echo "没有测试摘要"
+            echo '```'
+            echo
+            echo "### 构建产物 SHA256（dist/extension）"
+            echo
+            echo '```'
+            if [ -d dist/extension ]; then
+              (cd dist/extension && find . -type f | LC_ALL=C sort | xargs sha256sum)
+              echo "整体：$(cd dist/extension && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
+            else
+              echo "没有构建产物"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
