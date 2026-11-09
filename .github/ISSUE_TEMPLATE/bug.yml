@@ -1,5 +1,5 @@
 name: 缺陷
-description: 报告工程基础或 Chrome 扩展工程壳的实际错误
+description: 报告实际错误，并按原因回到对应阶段（准则 5）
 title: "缺陷："
 body:
   - type: textarea
@@ -15,10 +15,31 @@ body:
       label: 预期
     validations:
       required: true
-  - type: textarea
-    id: check
+  - type: input
+    id: commit
     attributes:
-      label: 已运行的检查
-      placeholder: npm run check
+      label: 出现问题的提交 SHA
+      description: 可以写 CI 摘要里的产物指纹，便于确认是不是同一个构建。
+    validations:
+      required: true
+  - type: dropdown
+    id: cause
+    attributes:
+      label: 初步原因归类
+      description: 决定回到哪个阶段。拿不准选“待判定”，由架构评审定类后写决定记录。
+      options:
+        - 待判定
+        - 需求：目标或验收不清
+        - 可行性：关键假设未证实或被否定
+        - 架构：契约或设计问题
+        - 开发：实现偏离契约
+        - 环境：浏览器、构建或依赖环境
+    validations:
+      required: true
+  - type: input
+    id: parent
+    attributes:
+      label: 关联 Issue
+      placeholder: "#2"
     validations:
       required: false

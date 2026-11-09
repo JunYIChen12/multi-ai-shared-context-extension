@@ -1,6 +1,6 @@
-name: 阶段任务
-description: 记录下一阶段的依赖、验收和停止条件
-title: "阶段："
+name: 工作包
+description: 一单一事：一个 Issue 只做一件可验收的事（准则 2）
+title: "工作包："
 body:
   - type: input
     id: requirement
@@ -12,8 +12,15 @@ body:
   - type: textarea
     id: goal
     attributes:
-      label: 本阶段要证明什么
-      description: 写可观察的结果，不要把未接入或 MOCK 写成真实模型回复。
+      label: 这一件事
+      description: 一句话写可观察的结果。发现别的问题另开 Issue 并互链，不在这里堆。不要把未接入或 MOCK 写成真实模型回复。
+    validations:
+      required: true
+  - type: input
+    id: assumption
+    attributes:
+      label: 依赖的假设 / 探针
+      description: 关联已证实的探针 Issue，例如 #6。没有就写“无”；依赖未证实的假设时先开探针。
     validations:
       required: true
   - type: textarea
@@ -27,6 +34,7 @@ body:
     id: acceptance
     attributes:
       label: 验收
+      description: 写清技术验收和业务验收各看什么。
     validations:
       required: true
   - type: textarea

@@ -1,0 +1,32 @@
+name: 假设 / 探针
+description: 先用最小真实实验证实或否定一个关键假设，再设计和开发（准则 1）
+title: "探针："
+body:
+  - type: textarea
+    id: assumption
+    attributes:
+      label: 要验证的一个假设
+      description: 只写一个。例如“发送后能用机器可读的页面信号认出本次回复”。
+    validations:
+      required: true
+  - type: textarea
+    id: experiment
+    attributes:
+      label: 最小实验
+      description: 在哪个真实环境、做什么、读什么证据。需要用户在场的步骤（登录、2FA、额度）单独标出。
+    validations:
+      required: true
+  - type: textarea
+    id: pass-fail
+    attributes:
+      label: 通过 / 否定的判据
+      description: 看到什么算证实，看到什么算否定。离线测试不能代替这一项。
+    validations:
+      required: true
+  - type: textarea
+    id: stop
+    attributes:
+      label: 停止条件
+      description: 触发后停下并回到对应阶段，不继续改代码。
+    validations:
+      required: true
