@@ -148,6 +148,12 @@ export function relateSession(
 }
 
 export function assessBaseline(evidence: PageEvidence): { code: TerminalCode; message: string } | null {
+  if (evidence.pageError.state === "ready" && evidence.pageError.value === "present") {
+    return { code: "page_error", message: MESSAGES.pageError };
+  }
+  if (evidence.composerStop.state === "unreadable") {
+    return { code: "unknown", message: MESSAGES.baselineStop };
+  }
   if (evidence.composerStop.state === "ready" && evidence.composerStop.value) {
     return { code: "busy", message: MESSAGES.busy };
   }
@@ -162,8 +168,8 @@ export function assessBaseline(evidence: PageEvidence): { code: TerminalCode; me
     || evidence.session.kind === "provisional") {
     return { code: "unknown", message: MESSAGES.baselineSession };
   }
-  if (evidence.pageError.state === "ready" && evidence.pageError.value === "present") {
-    return { code: "page_error", message: MESSAGES.pageError };
+  if (evidence.pageError.state === "unreadable") {
+    return { code: "unknown", message: MESSAGES.baselineError };
   }
   return null;
 }

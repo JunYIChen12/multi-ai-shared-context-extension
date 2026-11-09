@@ -108,6 +108,17 @@ function scripted(
 const readyEnd = { state: "ready" as const, value: true as const };
 
 describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", () => {
+  it("Stop 或错误证据不可读时，发送前必须 fail closed", async () => {
+    const unreadable = evidence({ stopUnreadable: true, errorUnreadable: true });
+    const script = scripted([unreadable, unreadable]);
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+    assert.equal(script.writes(), 0);
+    assert.equal(script.submits(), 0);
+  });
+
   it("归属和自然结束组合齐全时成功，包括曾经看见生成", async () => {
     const generating = evidence({
       turns: [
