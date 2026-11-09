@@ -50,7 +50,7 @@ export type TerminalCode =
 export interface CollectionMemory {
   baselineTurnIds: ReadonlySet<string>;
   baselineSession: SessionIdentity;
-  bornOnDraftUserId: string | null;
+  bornBeforeFormalUserId: string | null;
   provisionalToken: string | null;
   stopClicked: boolean;
   attributedUserId: string | null;
@@ -120,7 +120,7 @@ export function parseSessionUrl(raw: string): SessionIdentity {
 export function relateSession(
   pinned: SessionIdentity,
   current: SessionIdentity,
-  bornOnDraftUserId: string | null,
+  bornBeforeFormalUserId: string | null,
   turns: readonly StructuralTurn[],
 ): "same" | "extended" | "switched" | "unproven" {
   if (pinned.state !== "ready" || current.state !== "ready") {
@@ -140,7 +140,7 @@ export function relateSession(
   }
   if (pinned.kind === "draft" && current.kind === "conversation") {
     const stillThere = Boolean(
-      bornOnDraftUserId && turns.some((turn) => turn.role === "user" && turn.id === bornOnDraftUserId),
+      bornBeforeFormalUserId && turns.some((turn) => turn.role === "user" && turn.id === bornBeforeFormalUserId),
     );
     return stillThere ? "extended" : "unproven";
   }
@@ -179,7 +179,7 @@ export function memoryFromBaseline(evidence: PageEvidence, stableChecks: number)
   return {
     baselineTurnIds: new Set(turns.map((turn) => turn.id)),
     baselineSession: evidence.session,
-    bornOnDraftUserId: null,
+    bornBeforeFormalUserId: null,
     provisionalToken: null,
     stopClicked: false,
     attributedUserId: null,
@@ -225,36 +225,50 @@ export function assessPoll(
     if (newUsers.length > 1) {
       return terminal("unknown", MESSAGES.manyUsers);
     }
+    if (newUsers.length === 1 && !canAttribute) {
+      return terminal("unknown", MESSAGES.ambiguous);
+    }
     if (memory.attributedUserId && newUsers.some((turn) => turn.id !== memory.attributedUserId)) {
       return terminal("unknown", MESSAGES.userConflict);
     }
-    if (memory.attributedUserId) {
-      const linked = linkedAssistant(evidence.turns.value, memory.attributedUserId, memory.baselineTurnIds);
+    const userId = memory.attributedUserId ?? newUsers[0]?.id ?? null;
+    let assistantId = memory.attributedAssistantId;
+    if (userId) {
+      const linked = linkedAssistant(evidence.turns.value, userId, memory.baselineTurnIds);
       if (linked === "conflict") {
         return terminal("unknown", MESSAGES.manyAssistants);
       }
-      if (linked !== "none" && memory.attributedAssistantId && linked.id !== memory.attributedAssistantId) {
-        return terminal("unknown", MESSAGES.assistantConflict);
+      if (linked !== "none") {
+        if (assistantId && linked.id !== assistantId) {
+          return terminal("unknown", MESSAGES.assistantConflict);
+        }
+        assistantId = linked.id;
       }
     }
     return { kind: "pending", memory: {
-      ...memory, provisionalToken: evidence.session.token, lastText: "", stableReads: 0, sawEmptyReady: false,
+      ...memory, provisionalToken: evidence.session.token,
+      bornBeforeFormalUserId: memory.bornBeforeFormalUserId ?? userId,
+      attributedUserId: userId, attributedAssistantId: assistantId,
+      lastText: "", stableReads: 0, sawEmptyReady: false,
     } };
+  }
+  if (memory.provisionalToken && evidence.session.kind === "draft") {
+    return terminal("unknown", MESSAGES.unproven);
   }
 
   const turns = evidence.turns.value;
   const newUsers = turns.filter((turn) => turn.role === "user" && !memory.baselineTurnIds.has(turn.id));
-  let bornOnDraftUserId = memory.bornOnDraftUserId;
+  let bornBeforeFormalUserId = memory.bornBeforeFormalUserId;
   const onDraft = memory.baselineSession.state === "ready"
     && memory.baselineSession.kind === "draft"
     && evidence.session.kind === "draft";
   if (onDraft && newUsers.length === 1 && canAttribute) {
     const id = newUsers[0]?.id ?? null;
-    if (id && !bornOnDraftUserId) {
-      bornOnDraftUserId = id;
+    if (id && !bornBeforeFormalUserId) {
+      bornBeforeFormalUserId = id;
     }
   }
-  const continuity = relateSession(memory.baselineSession, evidence.session, bornOnDraftUserId, turns);
+  const continuity = relateSession(memory.baselineSession, evidence.session, bornBeforeFormalUserId, turns);
   if (continuity === "switched") {
     return terminal("navigation", MESSAGES.switched);
   }
@@ -300,7 +314,7 @@ export function assessPoll(
   const next: CollectionMemory = {
     ...memory,
     baselineSession: pinnedSession,
-    bornOnDraftUserId,
+    bornBeforeFormalUserId,
     stopClicked: false,
     attributedUserId: userId,
     attributedAssistantId: assistantId,

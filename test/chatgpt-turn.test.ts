@@ -343,6 +343,62 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     assert.equal(script.submits(), 1);
   });
 
+  it("新用户轮次首次出现在临时地址且正式地址保留同一身份时可完成", async () => {
+    const provisionalUser = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
+    const formal = evidence({
+      url: "https://chatgpt.com/c/final_1",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "OK", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), evidence({}), evidence({ url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1" }), provisionalUser, formal, formal, formal]);
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+    assert.deepEqual(result, { ok: true, body: "OK" });
+    assert.equal(script.submits(), 1);
+  });
+
+  it("临时地址首次登记的用户或回复身份变化时不能成功", async () => {
+    const provisional = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, endControl: readyEnd }),
+      ],
+    });
+    for (const formalTurns of [
+      [turn({ id: "u2", role: "user", order: 0 }), turn({ id: "a2", role: "assistant", order: 1, text: "WRONG", endControl: readyEnd })],
+      [turn({ id: "u1", role: "user", order: 0 }), turn({ id: "a2", role: "assistant", order: 1, text: "WRONG", endControl: readyEnd })],
+    ]) {
+      const formal = evidence({ url: "https://chatgpt.com/c/final_1", turns: formalTurns });
+      const script = scripted([evidence({}), evidence({}), provisional, formal, formal, formal]);
+      const result = await runChatGptTurn(script.page, "问题", script.timing);
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.code, "unknown");
+      assert.equal(script.submits(), 1);
+    }
+  });
+
+  it("临时地址出现用户轮次后退回草稿地址，不能跳过正式地址确认", async () => {
+    const provisional = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
+    const draft = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "UNPROVEN", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), evidence({}), provisional, draft, draft, draft]);
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+  });
+
   it("临时地址未结束时到期为未知，切到另一临时 token 也不得成功", async () => {
     const first = evidence({ url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1" });
     const forever = scripted([evidence({}), evidence({}), first]);
