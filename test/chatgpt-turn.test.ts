@@ -313,6 +313,137 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     assert.equal(JSON.stringify(switchedResult).includes("LEAK"), false);
   });
 
+  it("已识别临时地址只等待，已有草稿轮次延续到正式地址后仍可完成", async () => {
+    const born = evidence({ turns: [turn({ id: "u1", role: "user", order: 0 })] });
+    const provisional = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
+    const formal = evidence({
+      url: "https://chatgpt.com/c/final_1",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "OK", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), evidence({}), born, provisional, formal, formal, formal]);
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+    assert.deepEqual(result, { ok: true, body: "OK" });
+    assert.equal(script.submits(), 1);
+  });
+
+  it("临时地址未结束时到期为未知，切到另一临时 token 也不得成功", async () => {
+    const first = evidence({ url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1" });
+    const forever = scripted([evidence({}), evidence({}), first]);
+    const timedOut = await runChatGptTurn(forever.page, "问题", { ...forever.timing, polls: 2 });
+    assert.equal(timedOut.ok, false);
+    if (!timedOut.ok) {
+      assert.equal(timedOut.code, "unknown");
+      assert.notEqual(timedOut.message, "会话地址无法套用连续性规则");
+    }
+
+    const changed = evidence({ url: "https://chatgpt.com/c/local-chatgpt%3Atemp_2" });
+    const conflict = scripted([evidence({}), evidence({}), first, changed]);
+    const conflicted = await runChatGptTurn(conflict.page, "问题", conflict.timing);
+    assert.equal(conflicted.ok, false);
+    if (!conflicted.ok) {
+      assert.equal(conflicted.code, "unknown");
+      assert.equal(conflicted.message, "临时会话地址发生冲突，不能确定连续性");
+    }
+    assert.equal(conflict.submits(), 1);
+  });
+
+  it("临时地址上出现多个新用户轮次后，即使正式页只剩一个也不得成功", async () => {
+    const born = evidence({ turns: [turn({ id: "u1", role: "user", order: 0 })] });
+    const conflicted = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [turn({ id: "u1", role: "user", order: 0 }), turn({ id: "u2", role: "user", order: 1 })],
+    });
+    const formal = evidence({
+      url: "https://chatgpt.com/c/final_1",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "OK", endControl: readyEnd }),
+      ],
+    });
+    const script = scripted([evidence({}), evidence({}), born, conflicted, formal, formal, formal]);
+    const result = await runChatGptTurn(script.page, "问题", script.timing);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+  });
+
+  it("临时地址上的用户或回复身份冲突不得在正式页消失后变成成功", async () => {
+    const born = evidence({ turns: [turn({ id: "u1", role: "user", order: 0 })] });
+    const formal = evidence({
+      url: "https://chatgpt.com/c/final_1",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "OK", endControl: readyEnd }),
+      ],
+    });
+    const otherUser = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [turn({ id: "u2", role: "user", order: 0 })],
+    });
+    const otherAssistant = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a2", role: "assistant", order: 1, text: "OTHER", endControl: readyEnd }),
+      ],
+    });
+    for (const reads of [
+      [born, otherUser, formal, formal, formal],
+      [born, evidence({ turns: formal.turns.state === "ready" ? formal.turns.value : [] }), otherAssistant, formal, formal, formal],
+    ]) {
+      const script = scripted([evidence({}), evidence({}), ...reads]);
+      const result = await runChatGptTurn(script.page, "问题", script.timing);
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.code, "unknown");
+    }
+  });
+
+  it("经过临时地址后，正式页不能沿用草稿页的正文稳定计数", async () => {
+    const born = evidence({ turns: [turn({ id: "u1", role: "user", order: 0 })] });
+    const draftDone = evidence({
+      turns: [
+        turn({ id: "u1", role: "user", order: 0 }),
+        turn({ id: "a1", role: "assistant", order: 1, text: "OK", endControl: readyEnd }),
+      ],
+    });
+    const provisional = evidence({
+      url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1",
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
+    const formal = evidence({
+      url: "https://chatgpt.com/c/final_1",
+      turns: draftDone.turns.state === "ready" ? draftDone.turns.value : [],
+    });
+    const script = scripted([evidence({}), evidence({}), born, draftDone, draftDone, draftDone, provisional, formal]);
+    const result = await runChatGptTurn(script.page, "问题", { ...script.timing, stableChecks: 3 });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+  });
+
+  it("临时地址不能证明新会话归属，发送前已在临时地址也不得提交", async () => {
+    const provisional = evidence({ url: "https://chatgpt.com/c/local-chatgpt%3Atemp_1" });
+    const formal = evidence({
+      url: "https://chatgpt.com/c/final_1",
+      turns: [turn({ id: "u1", role: "user", order: 0 })],
+    });
+    const unproven = scripted([evidence({}), evidence({}), provisional, formal]);
+    const result = await runChatGptTurn(unproven.page, "问题", unproven.timing);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "unknown");
+
+    const beforeSend = scripted([provisional]);
+    const blocked = await runChatGptTurn(beforeSend.page, "问题", beforeSend.timing);
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.equal(blocked.code, "unknown");
+    assert.equal(beforeSend.writes(), 0);
+    assert.equal(beforeSend.submits(), 0);
+  });
+
   it("点击了发送但没有新用户轮次时不收正文；控件缺失不会发送", async () => {
     const baseline = evidence({ turns: [turn({ id: "u0", role: "user", order: 0 })] });
     const script = scripted([baseline, baseline, baseline]);
@@ -597,9 +728,18 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     assert.deepEqual(events, ["write", "wait", "submit"]);
   });
 
-  it("地址规则只承认根路径和 /c/id，不猜测其他路径", () => {
+  it("地址规则只承认根路径、正式会话和指定临时形状，不猜测其他路径", () => {
     assert.deepEqual(parseSessionUrl("https://chatgpt.com/"), { state: "ready", kind: "draft" });
     assert.deepEqual(parseSessionUrl("https://chatgpt.com/c/abc"), { state: "ready", kind: "conversation", id: "abc" });
+    assert.deepEqual(parseSessionUrl("https://chatgpt.com/c/local-chatgpt%3Atemp_1"), {
+      state: "ready", kind: "provisional", token: "temp_1",
+    });
+    assert.deepEqual(parseSessionUrl("https://chatgpt.com/c/local-chatgpt%3atemp_1"), {
+      state: "ready", kind: "provisional", token: "temp_1",
+    });
+    for (const path of ["/c/local-chatgpt%3A", "/c/local-chatgpt%3Atemp%2Fbad", "/c/other%3Atemp", "/c/LOCAL-chatgpt%3Atemp_1"]) {
+      assert.deepEqual(parseSessionUrl(`https://chatgpt.com${path}`), { state: "ready", kind: "unrecognized" });
+    }
     const unrecognized = parseSessionUrl("https://chatgpt.com/gpts");
     assert.equal(unrecognized.state, "ready");
     if (unrecognized.state === "ready") {

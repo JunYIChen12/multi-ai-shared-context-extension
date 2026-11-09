@@ -21,6 +21,7 @@ export type SessionIdentity =
   | { state: "unreadable" }
   | { state: "ready"; kind: "draft" }
   | { state: "ready"; kind: "conversation"; id: string }
+  | { state: "ready"; kind: "provisional"; token: string }
   | { state: "ready"; kind: "unrecognized" };
 
 export interface PageEvidence {
@@ -50,6 +51,7 @@ export interface CollectionMemory {
   baselineTurnIds: ReadonlySet<string>;
   baselineSession: SessionIdentity;
   bornOnDraftUserId: string | null;
+  provisionalToken: string | null;
   stopClicked: boolean;
   attributedUserId: string | null;
   attributedAssistantId: string | null;
@@ -75,6 +77,7 @@ const MESSAGES = {
   stopped: "已观察到本轮停止动作，残留文本不算正常结束",
   unreadable: "页面结构或会话证据不可读",
   unrecognized: "会话地址无法套用连续性规则",
+  provisionalConflict: "临时会话地址发生冲突，不能确定连续性",
   switched: "会话身份已切换，停止接收新页面内容",
   unproven: "无法证明新聊天地址仍是本次发送",
   manyUsers: "出现多个新的用户轮次，不能确定归属",
@@ -106,6 +109,10 @@ export function parseSessionUrl(raw: string): SessionIdentity {
   const conversation = /^\/c\/([A-Za-z0-9_-]+)$/.exec(path);
   if (conversation?.[1]) {
     return { state: "ready", kind: "conversation", id: conversation[1] };
+  }
+  const provisional = /^\/c\/local-chatgpt%3[aA]([A-Za-z0-9_-]{1,200})$/.exec(path);
+  if (provisional?.[1]) {
+    return { state: "ready", kind: "provisional", token: provisional[1] };
   }
   return { state: "ready", kind: "unrecognized" };
 }
@@ -150,7 +157,9 @@ export function assessBaseline(evidence: PageEvidence): { code: TerminalCode; me
   if (hasDuplicateIds(evidence.turns.value)) {
     return { code: "unknown", message: MESSAGES.baselineDuplicate };
   }
-  if (evidence.session.state !== "ready" || evidence.session.kind === "unrecognized") {
+  if (evidence.session.state !== "ready"
+    || evidence.session.kind === "unrecognized"
+    || evidence.session.kind === "provisional") {
     return { code: "unknown", message: MESSAGES.baselineSession };
   }
   if (evidence.pageError.state === "ready" && evidence.pageError.value === "present") {
@@ -165,6 +174,7 @@ export function memoryFromBaseline(evidence: PageEvidence, stableChecks: number)
     baselineTurnIds: new Set(turns.map((turn) => turn.id)),
     baselineSession: evidence.session,
     bornOnDraftUserId: null,
+    provisionalToken: null,
     stopClicked: false,
     attributedUserId: null,
     attributedAssistantId: null,
@@ -197,6 +207,33 @@ export function assessPoll(
   }
   if (hasDuplicateIds(evidence.turns.value)) {
     return terminal("unknown", MESSAGES.duplicateIds);
+  }
+  if (evidence.session.kind === "provisional") {
+    if (memory.baselineSession.state !== "ready" || memory.baselineSession.kind !== "draft") {
+      return terminal("navigation", MESSAGES.switched);
+    }
+    if (memory.provisionalToken && memory.provisionalToken !== evidence.session.token) {
+      return terminal("unknown", MESSAGES.provisionalConflict);
+    }
+    const newUsers = evidence.turns.value.filter((turn) => turn.role === "user" && !memory.baselineTurnIds.has(turn.id));
+    if (newUsers.length > 1) {
+      return terminal("unknown", MESSAGES.manyUsers);
+    }
+    if (memory.attributedUserId && newUsers.some((turn) => turn.id !== memory.attributedUserId)) {
+      return terminal("unknown", MESSAGES.userConflict);
+    }
+    if (memory.attributedUserId) {
+      const linked = linkedAssistant(evidence.turns.value, memory.attributedUserId, memory.baselineTurnIds);
+      if (linked === "conflict") {
+        return terminal("unknown", MESSAGES.manyAssistants);
+      }
+      if (linked !== "none" && memory.attributedAssistantId && linked.id !== memory.attributedAssistantId) {
+        return terminal("unknown", MESSAGES.assistantConflict);
+      }
+    }
+    return { kind: "pending", memory: {
+      ...memory, provisionalToken: evidence.session.token, lastText: "", stableReads: 0, sawEmptyReady: false,
+    } };
   }
 
   const turns = evidence.turns.value;
