@@ -6,6 +6,7 @@ import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
 import { PROVIDER_IDS } from "../core/types.js";
 import { createChatGptAdapter, createChatGptTabTransport, readChatGptTabId } from "./chatgpt-connector.js";
+import { providerIdsForMode } from "./provider-selection.js";
 
 let session: Session | null = null;
 const chatGptTabId = readChatGptTabId(window.location.search);
@@ -99,7 +100,7 @@ async function runSecondRound(): Promise<void> {
 }
 
 function selectedAdapters(mode: "mock" | "unimplemented" | "live"): ProviderAdapter[] {
-  return selectedProviderIds().map((id) => {
+  return providerIdsForMode(mode, selectedProviderIds()).map((id) => {
     if (mode === "mock") {
       return mockAdapter(id);
     }
@@ -150,7 +151,10 @@ function showConnectionState(): void {
   }
   for (const id of ["grok", "gemini"]) {
     const checkbox = document.querySelector<HTMLInputElement>(`input[value="${id}"]`);
-    if (checkbox) checkbox.checked = false;
+    if (checkbox) {
+      checkbox.checked = false;
+      checkbox.disabled = true;
+    }
   }
 }
 
