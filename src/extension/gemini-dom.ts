@@ -221,7 +221,7 @@ function matchesPrompt(userQuery: GeminiDomElement | undefined, prompt: string):
   if (!userQuery) return false;
   const lines = asArray(userQuery.querySelectorAll(".query-text-line"));
   const text = lines.length > 0
-    ? lines.map((line) => line.textContent ?? "").join("\n")
+    ? lines.map((line) => (line.textContent ?? "").trim()).join("\n")
     : userQuery.textContent ?? "";
   return text.trim() === prompt.trim();
 }

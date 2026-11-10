@@ -91,9 +91,9 @@ describe("Gemini DOM evidence boundary", () => {
     const user = new OfflineNode("user-query");
     const hiddenLabel = new OfflineNode("span", { class: "cdk-visually-hidden" }, "You said");
     hiddenLabel.throwOnTextRead = true;
-    const firstLine = new OfflineNode("p", { class: "query-text-line" }, "本次提问");
+    const firstLine = new OfflineNode("p", { class: "query-text-line" }, " 本次提问 ");
     const blankLine = new OfflineNode("p", { class: "query-text-line" }, "");
-    const secondLine = new OfflineNode("p", { class: "query-text-line" }, "[本次校验: new-id]");
+    const secondLine = new OfflineNode("p", { class: "query-text-line" }, " [本次校验: new-id] ");
     user.append(hiddenLabel);
     user.append(firstLine);
     user.append(blankLine);
