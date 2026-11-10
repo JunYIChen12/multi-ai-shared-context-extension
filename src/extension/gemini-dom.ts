@@ -181,11 +181,10 @@ export function createGeminiDomPort(getRoot: () => GeminiDomRoot, getUrl: () => 
       return readGeminiPage(getRoot(), getUrl(), prompt, baseline);
     },
     readPrompt() {
-      const input = lastVisible(getRoot().querySelectorAll(GEMINI_PROMPT_SELECTOR));
-      return input?.textContent ?? null;
+      return composerInput(getRoot())?.textContent ?? null;
     },
     writePrompt(prompt) {
-      const input = lastVisible(getRoot().querySelectorAll(GEMINI_PROMPT_SELECTOR));
+      const input = composerInput(getRoot());
       if (!input || !("textContent" in input)) return false;
       input.textContent = prompt;
       const dispatch = (input as unknown as { dispatchEvent?: (event: Event) => boolean }).dispatchEvent;
@@ -209,12 +208,17 @@ export function createGeminiDomPort(getRoot: () => GeminiDomRoot, getUrl: () => 
   };
 }
 
-export function lastVisible<T extends GeminiDomElement>(elements: ArrayLike<T>): T | null {
-  for (let index = elements.length - 1; index >= 0; index -= 1) {
-    const element = elements[index];
-    if (element && isVisible(element)) return element;
-  }
-  return null;
+function composerInput(root: GeminiDomRoot): GeminiDomElement | null {
+  const visible = asArray(root.querySelectorAll(GEMINI_PROMPT_SELECTOR))
+    .filter((node) => isVisible(node) && !hasClass(node, "ql-clipboard"));
+  const textboxes = visible.filter((node) => node.getAttribute("role") === "textbox");
+  const candidates = textboxes.length > 0 ? textboxes : visible;
+  const chosen = candidates[0];
+  return candidates.length === 1 && chosen ? chosen : null;
+}
+
+function hasClass(node: GeminiDomElement, name: string): boolean {
+  return (node.getAttribute("class") ?? "").split(/\s+/).includes(name);
 }
 
 function hasBusyState(node: GeminiDomElement): boolean {

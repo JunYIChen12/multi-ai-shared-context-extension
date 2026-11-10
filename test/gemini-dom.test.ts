@@ -28,6 +28,20 @@ describe("Gemini DOM evidence boundary", () => {
     assert.equal(empty.readPrompt(), null);
   });
 
+  it("writes the textbox and does not touch ql-clipboard", () => {
+    const editor = new OfflineNode("div", { class: "ql-editor", role: "textbox", contenteditable: "true" }, "");
+    const clipboard = new OfflineNode("div", { class: "ql-clipboard", contenteditable: "true" }, "");
+    const root: GeminiDomRoot = {
+      querySelector: () => null,
+      querySelectorAll: (selector) => selector === GEMINI_PROMPT_SELECTOR ? [editor, clipboard] : [],
+    };
+    const port = createGeminiDomPort(() => root, () => "https://gemini.google.com/app");
+    assert.equal(port.writePrompt("GEMINI_MARKER_OK"), true);
+    assert.equal(editor.textContent, "GEMINI_MARKER_OK");
+    assert.equal(clipboard.textContent, "");
+    assert.equal(port.readPrompt(), "GEMINI_MARKER_OK");
+  });
+
   it("accepts only Gemini app routes and distinguishes draft from conversation", () => {
     assert.deepEqual(parseGeminiRoute("https://gemini.google.com/app"), { kind: "draft" });
     assert.deepEqual(parseGeminiRoute("https://gemini.google.com/u/0/app/abc123"), {
