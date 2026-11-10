@@ -27,6 +27,7 @@ export async function runGeminiTurn(
   let disarm = () => undefined as void;
   let stopClicked = false;
   let conversationId: string | null = null;
+  let draftContinuityCandidateIndex: number | undefined;
   try {
     const baseline = page.read(trimmed);
     if (baseline.route.kind === "invalid") return failure("navigation", "当前不是可识别的 Gemini 对话页");
@@ -55,9 +56,14 @@ export async function runGeminiTurn(
       await timing.wait(signal);
       if (signal.aborted) return cancelled();
       if (stopClicked) return failure("stopped", "Gemini 回复已手动停止");
-      const current = page.read(trimmed, pageBaseline(baseline));
+      const current = page.read(trimmed, pageBaseline(baseline, draftContinuityCandidateIndex));
       if (current.route.kind === "invalid") {
         return failure("navigation", "Gemini 会话已切换，未采信页面内容");
+      }
+      if (current.pageError) return failure("page_error", "Gemini 页面报告错误");
+      if (baseline.route.kind === "draft" && current.route.kind === "conversation" &&
+          draftContinuityCandidateIndex === undefined) {
+        return failure("navigation", "Gemini 草稿页未观察到本次新问题进入等待状态，未采信正式会话");
       }
       if (current.route.kind === "conversation") {
         if (conversationId !== null && conversationId !== current.route.id) {
@@ -67,9 +73,20 @@ export async function runGeminiTurn(
       } else if (conversationId !== null) {
         return failure("navigation", "Gemini 会话已切换，未采信页面内容");
       }
-      if (current.pageError) return failure("page_error", "Gemini 页面报告错误");
       const result = assessProgress(baseline, current);
       if (result.kind === "failure") return failure(result.code, result.message);
+      if (baseline.route.kind === "draft" && current.route.kind === "draft" &&
+          result.candidateIndex !== null && result.pendingObserved) {
+        if (draftContinuityCandidateIndex !== undefined &&
+            draftContinuityCandidateIndex !== result.candidateIndex) {
+          return failure("ambiguous_turn", "Gemini 草稿页的本次问题候选发生变化");
+        }
+        draftContinuityCandidateIndex = result.candidateIndex;
+      }
+      if (baseline.route.kind === "draft" && current.route.kind === "conversation" &&
+          result.candidateIndex !== draftContinuityCandidateIndex) {
+        return failure("navigation", "正式 Gemini 会话不包含草稿页确认过的本次新问题");
+      }
       if (result.kind === "success") return { ok: true, body: result.body };
     }
     return failure("timeout", "Gemini 六分钟内未出现完整结束证据");
@@ -99,7 +116,10 @@ export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 function assessProgress(
   baseline: GeminiPageSnapshot,
   current: GeminiPageSnapshot,
-): { kind: "waiting" } | { kind: "success"; body: string } | { kind: "failure"; code: GeminiErrorCode; message: string } {
+):
+  | { kind: "waiting"; candidateIndex: number | null; pendingObserved: boolean }
+  | { kind: "success"; body: string; candidateIndex: number; pendingObserved: boolean }
+  | { kind: "failure"; code: GeminiErrorCode; message: string } {
   if (current.conversations.length < baseline.conversations.length) {
     return { kind: "failure", code: "ambiguous_turn", message: "Gemini 页面移除了本次归属所需的轮次结构" };
   }
@@ -151,22 +171,25 @@ function assessProgress(
   if (newUsers > 1 || newPromptMatches > 1) {
     return { kind: "failure", code: "ambiguous_turn", message: "本次发送期间出现多个新用户轮次" };
   }
-  if (candidateIndex === -1) return { kind: "waiting" };
+  if (candidateIndex === -1) return { kind: "waiting", candidateIndex: null, pendingObserved: false };
 
   const candidate = current.conversations[candidateIndex];
   const oldCandidate = baseline.conversations[candidateIndex];
-  if (!candidate) return { kind: "waiting" };
-  if (candidate.pendingRequests > (oldCandidate?.pendingRequests ?? 0) ||
-      candidate.pendingResponses > (oldCandidate?.pendingResponses ?? 0)) {
-    return { kind: "waiting" };
+  if (!candidate) return { kind: "waiting", candidateIndex, pendingObserved: false };
+  const pendingObserved = candidate.pendingRequests > (oldCandidate?.pendingRequests ?? 0) ||
+    candidate.pendingResponses > (oldCandidate?.pendingResponses ?? 0);
+  if (pendingObserved) {
+    return { kind: "waiting", candidateIndex, pendingObserved: true };
   }
-  if (candidate.modelResponseCount === (oldCandidate?.modelResponseCount ?? 0)) return { kind: "waiting" };
+  if (candidate.modelResponseCount === (oldCandidate?.modelResponseCount ?? 0)) {
+    return { kind: "waiting", candidateIndex, pendingObserved };
+  }
   if (candidate.modelResponseCount !== (oldCandidate?.modelResponseCount ?? 0) + 1 || candidate.modelResponses.length !== 1) {
     return { kind: "failure", code: "ambiguous_turn", message: "本次新用户问题无法对应到唯一模型回复" };
   }
 
   const response = candidate.modelResponses[0];
-  if (!response) return { kind: "waiting" };
+  if (!response) return { kind: "waiting", candidateIndex, pendingObserved };
   if (response.responseInfo) {
     return { kind: "failure", code: "page_error", message: "Gemini 回复包含页面状态信息，不能确认为完成" };
   }
@@ -174,17 +197,19 @@ function assessProgress(
     return { kind: "failure", code: "response_too_large", message: "Gemini 回复超过长度上限" };
   }
   if (!response.body.trim() || !response.completeFooter || !response.messageActions || response.ariaBusy || current.stopVisible) {
-    return { kind: "waiting" };
+    return { kind: "waiting", candidateIndex, pendingObserved };
   }
-  return { kind: "success", body: response.body };
+  return { kind: "success", body: response.body, candidateIndex, pendingObserved };
 }
 
-function pageBaseline(snapshot: GeminiPageSnapshot): GeminiPageBaseline {
+function pageBaseline(snapshot: GeminiPageSnapshot, draftContinuityCandidateIndex?: number): GeminiPageBaseline {
   return {
-    promptMatches: snapshot.conversations.map((conversation) => conversation.promptMatches),
+    route: snapshot.route,
+    userQueryCounts: snapshot.conversations.map((conversation) => conversation.userQueryCount),
     modelResponseCounts: snapshot.conversations.map((conversation) => conversation.modelResponseCount),
     completeFooterCounts: snapshot.conversations.map((conversation) => conversation.completeFooterCount),
     messageActionsCounts: snapshot.conversations.map((conversation) => conversation.messageActionsCount),
+    ...(draftContinuityCandidateIndex === undefined ? {} : { draftContinuityCandidateIndex }),
   };
 }
 

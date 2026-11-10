@@ -51,10 +51,12 @@ export interface GeminiConversationEvidence {
 }
 
 export interface GeminiPageBaseline {
-  promptMatches: readonly number[];
+  route: GeminiRoute;
+  userQueryCounts: readonly number[];
   modelResponseCounts: readonly number[];
   completeFooterCounts: readonly number[];
   messageActionsCounts: readonly number[];
+  draftContinuityCandidateIndex?: number;
 }
 
 export interface GeminiPageSnapshot {
@@ -106,16 +108,22 @@ export function readGeminiPage(
   prompt: string,
   baseline?: GeminiPageBaseline,
 ): GeminiPageSnapshot {
+  const route = parseGeminiRoute(pageUrl);
   const conversations = asArray(root.querySelectorAll(GEMINI_CONVERSATION_SELECTOR)).map((container, index) => {
     const userQueries = asArray(container.querySelectorAll(GEMINI_USER_SELECTOR));
-    const promptMatches = userQueries.filter((node) => (node.textContent ?? "").trim() === prompt.trim()).length;
+    const newUserQueries = baseline ? userQueries.slice(baseline.userQueryCounts[index] ?? 0) : [];
+    const promptMatches = newUserQueries.filter((node) => (node.textContent ?? "").trim() === prompt.trim()).length;
     const pendingRequests = asArray(container.querySelectorAll(GEMINI_PENDING_REQUEST_SELECTOR)).length;
     const pendingResponses = asArray(container.querySelectorAll(GEMINI_PENDING_RESPONSE_SELECTOR)).length;
     const modelNodes = asArray(container.querySelectorAll(GEMINI_MODEL_SELECTOR));
     const completeFooterCount = asArray(container.querySelectorAll(GEMINI_COMPLETE_SELECTOR)).length;
     const messageActionsCount = asArray(container.querySelectorAll(GEMINI_ACTIONS_SELECTOR)).length;
-    const isFresh = baseline !== undefined && promptMatches > (baseline.promptMatches[index] ?? 0);
-    const newModelNodes = isFresh ? modelNodes.slice(baseline?.modelResponseCounts[index] ?? 0) : [];
+    const isFresh = baseline !== undefined && promptMatches > 0;
+    const unprovenDraftNavigation = baseline?.route.kind === "draft" && route.kind === "conversation" &&
+      baseline.draftContinuityCandidateIndex !== index;
+    const newModelNodes = isFresh && !unprovenDraftNavigation
+      ? modelNodes.slice(baseline?.modelResponseCounts[index] ?? 0)
+      : [];
     const completeFooter = completeFooterCount > (baseline?.completeFooterCounts[index] ?? 0);
     const messageActions = messageActionsCount > (baseline?.messageActionsCounts[index] ?? 0);
     const modelResponses = newModelNodes.map((model): GeminiModelEvidence => ({
@@ -139,7 +147,7 @@ export function readGeminiPage(
   const alerts = asArray(root.querySelectorAll('[role="alert"]'));
   const stops = asArray(root.querySelectorAll(GEMINI_STOP_SELECTOR));
   return {
-    route: parseGeminiRoute(pageUrl),
+    route,
     conversations,
     pageError: alerts.some(isVisible),
     stopVisible: stops.some(isVisible),

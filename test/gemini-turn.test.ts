@@ -25,9 +25,23 @@ describe("Gemini 第一轮证据状态机", () => {
     assert.equal(page.reads, 4);
   });
 
+  it("从草稿页直达同文旧会话时，不把旧回复记成这次成功", async () => {
+    const page = new FakePage([
+      emptyDraft(),
+      emptyDraft(),
+      snapshot("conversation", [{
+        userQueryCount: 1, promptMatches: 1, modelResponses: [model("OLD_SAME_PROMPT_REPLY")],
+      }], false, false, "old-conversation"),
+    ]);
+    const result = await runGeminiTurn(page, PROMPT, new AbortController().signal, fast(page, 1));
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "navigation");
+    assert.equal(page.submits, 1);
+  });
+
   it("竞争的新增轮次失败且不重发", async () => {
     const page = new FakePage([
-      emptyDraft(), emptyDraft(),
+      emptyDraft("conversation-1"), emptyDraft("conversation-1"),
       snapshot("conversation", [
         { userQueryCount: 1, promptMatches: 1 },
         { userQueryCount: 1, promptMatches: 0 },
@@ -40,7 +54,11 @@ describe("Gemini 第一轮证据状态机", () => {
   });
 
   it("页面错误返回失败且正文为空", async () => {
-    const page = new FakePage([emptyDraft(), emptyDraft(), { ...emptyDraft(), pageError: true }]);
+    const page = new FakePage([
+      emptyDraft("conversation-1"),
+      emptyDraft("conversation-1"),
+      { ...emptyDraft("conversation-1"), pageError: true },
+    ]);
     const result = await runGeminiTurn(page, PROMPT, new AbortController().signal, fast(page));
     assert.deepEqual(result, { ok: false, code: "page_error", message: "Gemini 页面报告错误" });
     assert.equal(page.submits, 1);
@@ -48,7 +66,7 @@ describe("Gemini 第一轮证据状态机", () => {
 
   it("缺少完成标记到限后返回 timeout，不把部分正文写成成功", async () => {
     const page = new FakePage([
-      emptyDraft(), emptyDraft(),
+      emptyDraft("conversation-1"), emptyDraft("conversation-1"),
       snapshot("conversation", [{ userQueryCount: 1, promptMatches: 1, modelResponses: [model("partial", false)] }]),
     ]);
     const result = await runGeminiTurn(page, PROMPT, new AbortController().signal, fast(page, 1));
@@ -69,7 +87,7 @@ describe("Gemini 第一轮证据状态机", () => {
   it("response-info-line 等冲突标记不能被当成自然完成", async () => {
     const conflicting = { ...model("GEMINI_LIVE_OK"), responseInfo: true };
     const page = new FakePage([
-      emptyDraft(), emptyDraft(),
+      emptyDraft("conversation-1"), emptyDraft("conversation-1"),
       snapshot("conversation", [{ userQueryCount: 1, promptMatches: 1, modelResponses: [conflicting] }]),
     ]);
     const result = await runGeminiTurn(page, PROMPT, new AbortController().signal, fast(page));

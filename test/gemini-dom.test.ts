@@ -38,8 +38,9 @@ describe("Gemini DOM evidence boundary", () => {
     assert.deepEqual(parseGeminiRoute("http://gemini.google.com/app"), { kind: "invalid" });
   });
 
-  it("does not read old model bodies and reads the exact body only for a new matching user turn", () => {
+  it("does not read old user or model bodies and reads only the differential user and model turn", () => {
     const old = conversation("older prompt", "OLD_PRIVATE_REPLY");
+    old.user.throwOnTextRead = true;
     const root = new OfflineNode("main");
     root.append(old.container);
     const baseline = readGeminiPage(root, "https://gemini.google.com/app/old", "target prompt");
@@ -66,6 +67,26 @@ describe("Gemini DOM evidence boundary", () => {
       responseInfo: false,
       ariaBusy: false,
     }]);
+  });
+
+  it("未在草稿页确认 pending 前，正式路由中的同文旧回复正文不读取", () => {
+    const root = new OfflineNode("main");
+    const baseline = readGeminiPage(root, "https://gemini.google.com/app", "target prompt");
+    const old = conversation("target prompt", "OLD_SAME_PROMPT_REPLY");
+    root.append(old.container);
+
+    const baselineWithRoute = pageBaseline(baseline);
+    const current = readGeminiPage(
+      root,
+      "https://gemini.google.com/u/0/app/old-conversation",
+      "target prompt",
+      baselineWithRoute,
+    );
+
+    assert.equal(current.conversations[0]?.promptMatches, 1);
+    assert.equal(current.conversations[0]?.modelResponseCount, 1);
+    assert.deepEqual(current.conversations[0]?.modelResponses, []);
+    assert.equal(old.body.textReads, 0);
   });
 
   it("只读取同一会话基线后的新回复，历史正文和完成标记不冒充本轮证据", () => {
@@ -96,21 +117,23 @@ describe("Gemini DOM evidence boundary", () => {
   });
 });
 
-function conversation(prompt: string, body: string): { container: OfflineNode; body: OfflineNode } {
+function conversation(prompt: string, body: string): { container: OfflineNode; user: OfflineNode; body: OfflineNode } {
   const container = new OfflineNode("div", { class: "conversation-container" });
-  container.append(new OfflineNode("user-query", {}, prompt));
+  const user = new OfflineNode("user-query", {}, prompt);
+  container.append(user);
   const response = new OfflineNode("model-response");
   const text = new OfflineNode("div", { class: "model-response-content" }, body);
   response.append(text);
   response.append(new OfflineNode("div", { class: "response-footer complete" }));
   response.append(new OfflineNode("div", { class: "message-actions" }));
   container.append(response);
-  return { container, body: text };
+  return { container, user, body: text };
 }
 
 function pageBaseline(snapshot: GeminiPageSnapshot): GeminiPageBaseline {
   return {
-    promptMatches: snapshot.conversations.map((item) => item.promptMatches),
+    route: snapshot.route,
+    userQueryCounts: snapshot.conversations.map((item) => item.userQueryCount),
     modelResponseCounts: snapshot.conversations.map((item) => item.modelResponseCount),
     completeFooterCounts: snapshot.conversations.map((item) => item.completeFooterCount),
     messageActionsCounts: snapshot.conversations.map((item) => item.messageActionsCount),
@@ -121,6 +144,7 @@ class OfflineNode implements GeminiDomRoot, GeminiDomElement {
   readonly children: OfflineNode[] = [];
   parent: OfflineNode | null = null;
   textReads = 0;
+  throwOnTextRead = false;
 
   constructor(
     readonly tagName: string,
@@ -129,6 +153,7 @@ class OfflineNode implements GeminiDomRoot, GeminiDomElement {
   ) {}
 
   get textContent(): string {
+    if (this.throwOnTextRead) throw new Error("old user-query body was read");
     this.textReads += 1;
     return this.text + this.children.map((child) => child.textContent).join("");
   }
