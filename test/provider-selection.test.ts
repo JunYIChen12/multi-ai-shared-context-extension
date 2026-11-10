@@ -8,6 +8,11 @@ describe("讨论页来源选择", () => {
     assert.deepEqual(providerIdsForMode("live", ["grok", "gemini"]), []);
   });
 
+  it("Gemini 连接只选择 Gemini，不把 ChatGPT 或 Grok 混入本次正式发送", () => {
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok", "gemini"], "gemini"), ["gemini"]);
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok"], "gemini"), []);
+  });
+
   it("MOCK 与正式勾选无关，未连接记录保持原选择", () => {
     assert.deepEqual(providerIdsForMode("mock", []), ["chatgpt", "grok", "gemini"]);
     assert.deepEqual(providerIdsForMode("unimplemented", ["grok"]), ["grok"]);
