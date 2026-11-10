@@ -83,6 +83,45 @@ describe("Gemini DOM evidence boundary", () => {
     }]);
   });
 
+  it("matches visible query lines and reads the custom-element response body without hidden labels", () => {
+    const root = new OfflineNode("main");
+    const prompt = "本次提问\n\n[本次校验: new-id]";
+    const baseline = readGeminiPage(root, "https://gemini.google.com/app", prompt);
+    const container = new OfflineNode("div", { class: "conversation-container" });
+    const user = new OfflineNode("user-query");
+    const hiddenLabel = new OfflineNode("span", { class: "cdk-visually-hidden" }, "You said");
+    hiddenLabel.throwOnTextRead = true;
+    const firstLine = new OfflineNode("p", { class: "query-text-line" }, "本次提问");
+    const blankLine = new OfflineNode("p", { class: "query-text-line" }, "");
+    const secondLine = new OfflineNode("p", { class: "query-text-line" }, "[本次校验: new-id]");
+    user.append(hiddenLabel);
+    user.append(firstLine);
+    user.append(blankLine);
+    user.append(secondLine);
+    Object.defineProperty(user, "textContent", {
+      get: () => `You said${firstLine.textContent}${secondLine.textContent}`,
+    });
+    container.append(user);
+
+    const response = new OfflineNode("model-response");
+    const hiddenResponseLabel = new OfflineNode("span", { class: "cdk-visually-hidden" }, "Gemini said");
+    hiddenResponseLabel.throwOnTextRead = true;
+    const visibleReply = "可见回复正文";
+    const body = new OfflineNode("model-response-content", { class: "" }, visibleReply);
+    response.append(hiddenResponseLabel);
+    response.append(body);
+    container.append(response);
+    root.append(container);
+
+    const observed = readGeminiPage(root, "https://gemini.google.com/app", prompt, pageBaseline(baseline));
+    const evidence = observed.conversations[0]?.modelResponses[0];
+    assert.equal(observed.conversations[0]?.promptMatches, 1);
+    assert.equal(evidence?.body, visibleReply);
+    assert.equal(evidence?.body.includes("Gemini said"), false);
+    assert.equal(hiddenLabel.textReads, 0);
+    assert.equal(hiddenResponseLabel.textReads, 0);
+  });
+
   it("未在草稿页确认 pending 前，正式路由中的同文旧回复正文不读取", () => {
     const root = new OfflineNode("main");
     const baseline = readGeminiPage(root, "https://gemini.google.com/app", "target prompt");

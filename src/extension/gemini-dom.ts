@@ -3,7 +3,7 @@ export const GEMINI_USER_SELECTOR = "user-query, .user-query";
 export const GEMINI_PENDING_REQUEST_SELECTOR = "pending-request, .pending-request";
 export const GEMINI_PENDING_RESPONSE_SELECTOR = "pending-response, .pending-response";
 export const GEMINI_MODEL_SELECTOR = "model-response, .model-response";
-export const GEMINI_MODEL_BODY_SELECTOR = ".model-response-content";
+export const GEMINI_MODEL_BODY_SELECTOR = "model-response-content, .model-response-content";
 export const GEMINI_COMPLETE_SELECTOR = ".response-footer.complete";
 export const GEMINI_ACTIONS_SELECTOR = "message-actions, .message-actions";
 export const GEMINI_RESPONSE_INFO_SELECTOR = "response-info-line, .response-info-line";
@@ -119,7 +119,7 @@ export function readGeminiPage(
       baseline.draftContinuityCandidateIndex !== candidateIndex);
   const conversations = containers.map((container, index) => {
     const promptMatches = canReadCandidate && candidateIndex === index &&
-      (newUserQueries[index]?.[0]?.textContent ?? "").trim() === prompt.trim() ? 1 : 0;
+      matchesPrompt(newUserQueries[index]?.[0], prompt) ? 1 : 0;
     const pendingRequests = asArray(container.querySelectorAll(GEMINI_PENDING_REQUEST_SELECTOR)).length;
     const pendingResponses = asArray(container.querySelectorAll(GEMINI_PENDING_RESPONSE_SELECTOR)).length;
     const modelNodes = asArray(container.querySelectorAll(GEMINI_MODEL_SELECTOR));
@@ -215,6 +215,15 @@ function composerInput(root: GeminiDomRoot): GeminiDomElement | null {
   const candidates = textboxes.length > 0 ? textboxes : visible;
   const chosen = candidates[0];
   return candidates.length === 1 && chosen ? chosen : null;
+}
+
+function matchesPrompt(userQuery: GeminiDomElement | undefined, prompt: string): boolean {
+  if (!userQuery) return false;
+  const lines = asArray(userQuery.querySelectorAll(".query-text-line"));
+  const text = lines.length > 0
+    ? lines.map((line) => line.textContent ?? "").join("\n")
+    : userQuery.textContent ?? "";
+  return text.trim() === prompt.trim();
 }
 
 function hasClass(node: GeminiDomElement, name: string): boolean {
