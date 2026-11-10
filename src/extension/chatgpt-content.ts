@@ -6,14 +6,16 @@ import { DEFAULT_CHATGPT_TIMING, createSendLedger, runChatGptTurn } from "./chat
 const scope = globalThis as typeof globalThis & { __multiAiChatGptListenerInstalled?: boolean };
 const sendLedger = createSendLedger();
 
-const gate = createCollectionGate((prompt, signal) =>
-  runChatGptTurn(
+const gate = createCollectionGate(
+  (prompt, signal) => runChatGptTurn(
     createDomEvidencePort(() => document, () => location.href),
     prompt,
     DEFAULT_CHATGPT_TIMING,
     signal,
     sendLedger,
   ),
+  { ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送" },
+  { ok: false, code: "in_flight", message: "这个标签页已有进行中的采集，不会再次发送" },
 );
 
 if (!scope.__multiAiChatGptListenerInstalled) {
