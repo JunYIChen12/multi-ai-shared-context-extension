@@ -109,3 +109,12 @@
 - 目前已观察到一次扩展显示“页面结束”、ChatGPT 网页回复 `CHATGPT_LIVE_OK`、Markdown 和 JSONL 均落盘且 JSONL 可解析；导出正文仍多出 `ChatGPT 说：ChatGPT`，应作为已知缺陷跟踪。未重发真实网页用例。
 - 架构师负责技术证据及推送复核；用户保留业务验收、合并与发布决定。推送分支不是合并或发布；#2 的其余验收项与 `npm ci` 环境阻塞必须继续如实记录。
 - 本轮重新执行 `npm ci` 失败：npm 11.13.0 自身缺少 `make-fetch-happen/lib/cache/policy.js`；未重建本机 Node/npm 环境。随后 `npm run check` 通过（类型检查、66/66 离线测试、扩展构建），待推送差异的 `git diff --check` 通过。离线通过不能替代真实页面回归；本轮未再次发送网页问题。
+
+## 2026-11-10 Issue #5 正文偏差修复与受限复测
+
+- 基线：`codex/chatgpt-attribution-followup` @ `de99930f637c412bb2dd4596d2753c8f78232f92`；Windows、Node 24.16.0、npm 11.13.0。用户批准仅修 #5，架构评审记录见 [Issue #5 评论 6756430440](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/5#issuecomment-6756430440)。
+- 根因：`readTurnBody()` 克隆 assistant 单元后把 `H4.sr-only` 隐藏角色标题并入正文。先补离线反例，观察到实际值 `ChatGPT 说：ChatGPTCHATGPT_LIVE_OK ChatGPT` 与期望不符；随后只清空副本中 `h4.sr-only` 的文本，不按固定前缀删正文。测试夹具的简化标签匹配同步识别 `h4`。
+- `npm ci` 成功；`npm run check` 类型检查、69/69 测试和构建通过；`git diff --check` 通过。Luna 子代理仅只读复审两文件差异，未见本范围内代码阻塞；离线证据不能替代网页验收。
+- 真实复测由用户在无敏感 ChatGPT 会话中操作。首次尝试时网页有回复、扩展判失败；具体首次错误原文未保留。紧接着同一标签页的再发送被共享发送账本按现有安全规则阻止，网页未收到第二次发送；这不是正文比对结果。用户关闭 ChatGPT 后重新打开并连接，新一次发送返回 `页面结束`，讨论页正文 `CHATGPT_LIVE_OK`；用户确认网页可见原文也仅 `CHATGPT_LIVE_OK`。
+- 新导出 `D:\安装包\AI-REQ-20261105-001-aa3343ff-6081-46cd-94c4-39621c1bb514.md` 与同名 `.jsonl` 均落盘。两者 provider 正文精确等于 `CHATGPT_LIVE_OK`，无旧隐藏标题前缀；JSONL 经项目解析器成功解析为 2 条消息。SHA256：Markdown `08A880A9C60542596158A121277E9F0ABDB75BDC69083478CB3B9E8870E05C53`；JSONL `1D746988135113BDCE0A72F1C9A846230881C16D7435571AA86E89B24D86BFD1`。
+- #5 的本次正文准确性验收有受限通过证据；首次发送失败原因不明，#2 的可重复真实链路验收不得由这一次成功替代。Grok、Gemini、权限、合并与发布均未改变。

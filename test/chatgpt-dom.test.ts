@@ -144,7 +144,7 @@ function matchesSimple(node: OfflineNode, selector: string): boolean {
   if (selector.startsWith("#")) {
     return node.attrs.id === selector.slice(1);
   }
-  const tag = /^[a-z]+/i.exec(selector);
+  const tag = /^[a-z][a-z0-9]*/i.exec(selector);
   let rest = selector;
   if (tag) {
     if (node.tag !== tag[0]) return false;
@@ -207,6 +207,24 @@ function appendAssistantTo(wrapper: OfflineNode, id: string, text: string): void
 }
 
 describe("离线 DOM 模拟（不是 ChatGPT 页面）", () => {
+  it("隐藏的角色标题不进入回复正文，正文中的 ChatGPT 原样保留", () => {
+    const { root, assistantId } = observedPage();
+    const wrapper = root.children.find((child) => child.attrs["data-turn-key"] === "turn-1");
+    const assistant = wrapper?.children.find((child) => child.attrs["data-chatgpt-search-unit-key"]?.endsWith(":assistant"));
+    if (!assistant) throw new Error("assistant fixture missing");
+    assistant.textContent = "";
+    assistant.children.push(
+      new OfflineNode("h4", { class: "sr-only" }, "ChatGPT 说：ChatGPT"),
+      new OfflineNode("div", {}, "CHATGPT_LIVE_OK ChatGPT"),
+    );
+
+    const read = readPageEvidence(root, "https://chatgpt.com/", [assistantId]);
+    assert.equal(read.turns.state, "ready");
+    if (read.turns.state === "ready") {
+      assert.equal(read.turns.value[1]?.text, "CHATGPT_LIVE_OK ChatGPT");
+    }
+  });
+
   it("正文里与按钮相同的 Copy 和复制文案不会被删掉", () => {
     const body = "正文包含 Copy 和复制";
     const { root, assistantId } = observedPage();

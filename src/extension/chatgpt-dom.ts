@@ -224,6 +224,11 @@ function readTurnBody(node: EvidenceQueryElement): string {
   for (const button of asArray(copy.querySelectorAll("button"))) {
     button.textContent = "";
   }
+  for (const heading of asArray(copy.querySelectorAll("h4"))) {
+    if (heading.getAttribute("class")?.split(/\s+/).includes("sr-only")) {
+      heading.textContent = "";
+    }
+  }
   return copy.textContent ?? "";
 }
 
