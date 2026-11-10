@@ -189,11 +189,12 @@ export async function connectActiveGeminiTab(port: GeminiConnectionPort): Promis
 }
 
 function toAskRequest(request: ProviderRequest): GeminiAskRequest {
+  const requestId = crypto.randomUUID();
   return {
     channel: GEMINI_CHANNEL,
     type: "ask",
-    prompt: request.userPrompt,
-    requestId: crypto.randomUUID(),
+    prompt: `${request.userPrompt}\n\n[本次校验: ${requestId}]`,
+    requestId,
   };
 }
 

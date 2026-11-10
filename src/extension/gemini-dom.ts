@@ -109,10 +109,17 @@ export function readGeminiPage(
   baseline?: GeminiPageBaseline,
 ): GeminiPageSnapshot {
   const route = parseGeminiRoute(pageUrl);
-  const conversations = asArray(root.querySelectorAll(GEMINI_CONVERSATION_SELECTOR)).map((container, index) => {
-    const userQueries = asArray(container.querySelectorAll(GEMINI_USER_SELECTOR));
-    const newUserQueries = baseline ? userQueries.slice(baseline.userQueryCounts[index] ?? 0) : [];
-    const promptMatches = newUserQueries.filter((node) => (node.textContent ?? "").trim() === prompt.trim()).length;
+  const containers = asArray(root.querySelectorAll(GEMINI_CONVERSATION_SELECTOR));
+  const userQueries = containers.map((container) => asArray(container.querySelectorAll(GEMINI_USER_SELECTOR)));
+  const newUserQueries = userQueries.map((nodes, index) => baseline ? nodes.slice(baseline.userQueryCounts[index] ?? 0) : []);
+  const candidateCount = newUserQueries.reduce((count, nodes) => count + nodes.length, 0);
+  const candidateIndex = newUserQueries.findIndex((nodes) => nodes.length > 0);
+  const canReadCandidate = baseline !== undefined && route.kind !== "invalid" && candidateCount === 1 &&
+    !(baseline.route.kind === "draft" && route.kind === "conversation" &&
+      baseline.draftContinuityCandidateIndex !== candidateIndex);
+  const conversations = containers.map((container, index) => {
+    const promptMatches = canReadCandidate && candidateIndex === index &&
+      (newUserQueries[index]?.[0]?.textContent ?? "").trim() === prompt.trim() ? 1 : 0;
     const pendingRequests = asArray(container.querySelectorAll(GEMINI_PENDING_REQUEST_SELECTOR)).length;
     const pendingResponses = asArray(container.querySelectorAll(GEMINI_PENDING_RESPONSE_SELECTOR)).length;
     const modelNodes = asArray(container.querySelectorAll(GEMINI_MODEL_SELECTOR));
@@ -121,7 +128,8 @@ export function readGeminiPage(
     const isFresh = baseline !== undefined && promptMatches > 0;
     const unprovenDraftNavigation = baseline?.route.kind === "draft" && route.kind === "conversation" &&
       baseline.draftContinuityCandidateIndex !== index;
-    const newModelNodes = isFresh && !unprovenDraftNavigation
+    const newModelNodes = isFresh && !unprovenDraftNavigation &&
+      modelNodes.length === (baseline?.modelResponseCounts[index] ?? 0) + 1
       ? modelNodes.slice(baseline?.modelResponseCounts[index] ?? 0)
       : [];
     const completeFooter = completeFooterCount > (baseline?.completeFooterCounts[index] ?? 0);
@@ -134,7 +142,7 @@ export function readGeminiPage(
       ariaBusy: hasBusyState(container) || hasBusyState(model),
     }));
     return {
-      userQueryCount: userQueries.length,
+      userQueryCount: userQueries[index]?.length ?? 0,
       promptMatches,
       pendingRequests,
       pendingResponses,

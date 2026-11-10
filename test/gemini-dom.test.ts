@@ -83,10 +83,74 @@ describe("Gemini DOM evidence boundary", () => {
       baselineWithRoute,
     );
 
-    assert.equal(current.conversations[0]?.promptMatches, 1);
+    assert.equal(current.conversations[0]?.promptMatches, 0);
     assert.equal(current.conversations[0]?.modelResponseCount, 1);
     assert.deepEqual(current.conversations[0]?.modelResponses, []);
+    assert.equal(old.user.textReads, 0);
     assert.equal(old.body.textReads, 0);
+  });
+
+  it("多个新增提问时一个正文也不读取", () => {
+    const root = new OfflineNode("main");
+    const baseline = readGeminiPage(root, "https://gemini.google.com/app", "本次提问\n\n[本次校验: new-id]");
+    const first = conversation("旧聊天的问题", "OLD_PRIVATE_REPLY");
+    const second = conversation("本次提问\n\n[本次校验: new-id]", "NEW_REPLY");
+    root.append(first.container);
+    root.append(second.container);
+
+    const current = readGeminiPage(root, "https://gemini.google.com/app/new", "本次提问\n\n[本次校验: new-id]", pageBaseline(baseline));
+    assert.equal(first.user.textReads, 0);
+    assert.equal(second.user.textReads, 0);
+    assert.equal(first.body.textReads, 0);
+    assert.equal(second.body.textReads, 0);
+    assert.deepEqual(current.conversations.map((item) => item.promptMatches), [0, 0]);
+  });
+
+  it("无效路由不读取候选提问或回复正文", () => {
+    const root = new OfflineNode("main");
+    const baseline = readGeminiPage(root, "https://gemini.google.com/app", "本次提问\n\n[本次校验: new-id]");
+    const old = conversation("旧聊天的问题", "OLD_PRIVATE_REPLY");
+    root.append(old.container);
+
+    const current = readGeminiPage(root, "https://gemini.google.com/settings", "本次提问\n\n[本次校验: new-id]", pageBaseline(baseline));
+    assert.equal(current.route.kind, "invalid");
+    assert.equal(old.user.textReads, 0);
+    assert.equal(old.body.textReads, 0);
+  });
+
+  it("唯一候选的标记不匹配时只在内存比较该提问，不读取旧回复", () => {
+    const root = new OfflineNode("main");
+    const baseline = readGeminiPage(root, "https://gemini.google.com/app", "相同原文\n\n[本次校验: new-id]");
+    const old = conversation("相同原文", "OLD_PRIVATE_REPLY");
+    root.append(old.container);
+
+    const current = readGeminiPage(root, "https://gemini.google.com/app/old", "相同原文\n\n[本次校验: new-id]", {
+      ...pageBaseline(baseline), draftContinuityCandidateIndex: 0,
+    });
+    assert.equal(old.user.textReads, 1);
+    assert.equal(old.body.textReads, 0);
+    assert.equal(current.conversations[0]?.promptMatches, 0);
+    assert.deepEqual(current.conversations[0]?.modelResponses, []);
+  });
+
+  it("唯一标记提问下出现多个新回复时不读取任何回复正文", () => {
+    const root = new OfflineNode("main");
+    const baseline = readGeminiPage(root, "https://gemini.google.com/app", "本次提问\n\n[本次校验: new-id]");
+    const first = conversation("本次提问\n\n[本次校验: new-id]", "FIRST_REPLY");
+    const second = new OfflineNode("model-response");
+    const secondBody = new OfflineNode("div", { class: "model-response-content" }, "OTHER_REPLY");
+    second.append(secondBody);
+    first.container.append(second);
+    root.append(first.container);
+
+    const current = readGeminiPage(root, "https://gemini.google.com/app/new", "本次提问\n\n[本次校验: new-id]", {
+      ...pageBaseline(baseline), draftContinuityCandidateIndex: 0,
+    });
+    assert.equal(current.conversations[0]?.promptMatches, 1);
+    assert.equal(current.conversations[0]?.modelResponseCount, 2);
+    assert.deepEqual(current.conversations[0]?.modelResponses, []);
+    assert.equal(first.body.textReads, 0);
+    assert.equal(secondBody.textReads, 0);
   });
 
   it("只读取同一会话基线后的新回复，历史正文和完成标记不冒充本轮证据", () => {

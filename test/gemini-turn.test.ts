@@ -39,6 +39,19 @@ describe("Gemini 第一轮证据状态机", () => {
     assert.equal(page.submits, 1);
   });
 
+  it("草稿页见到本次 pending 后切到无标记的同文旧聊天仍不采信回复", async () => {
+    const page = new FakePage([
+      emptyDraft(), emptyDraft(),
+      snapshot("draft", [{ userQueryCount: 1, promptMatches: 1, pendingRequests: 1, pendingResponses: 1 }]),
+      snapshot("conversation", [{ userQueryCount: 1, promptMatches: 0, modelResponses: [model("OLD_PRIVATE_REPLY")] }],
+        false, false, "old-conversation"),
+    ]);
+    const result = await runGeminiTurn(page, PROMPT, new AbortController().signal, fast(page, 2));
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, "ambiguous_turn");
+    assert.equal(page.submits, 1);
+  });
+
   it("竞争的新增轮次失败且不重发", async () => {
     const page = new FakePage([
       emptyDraft("conversation-1"), emptyDraft("conversation-1"),

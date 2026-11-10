@@ -10,6 +10,7 @@ import {
   type GeminiTabMessage,
 } from "../src/extension/gemini-connector.js";
 import type { ProviderRequest } from "../src/core/types.js";
+import { runGeminiTurn } from "../src/extension/gemini-turn.js";
 
 describe("Gemini 单标签页连接", () => {
   it("只接受 HTTPS Gemini 页面，并在用户连接时注入当前标签页", async () => {
@@ -65,7 +66,10 @@ describe("Gemini 单标签页连接", () => {
     assert.equal(sent.length, 1);
     assert.equal(sent[0]?.channel, GEMINI_CHANNEL);
     assert.equal(sent[0]?.type, "ask");
-    if (sent[0]?.type === "ask") assert.equal(sent[0].prompt, "只回复 GEMINI_LIVE_OK");
+    if (sent[0]?.type === "ask") {
+      assert.match(sent[0].requestId, /^[0-9a-f-]{36}$/);
+      assert.equal(sent[0].prompt, `只回复 GEMINI_LIVE_OK\n\n[本次校验: ${sent[0].requestId}]`);
+    }
     controller.abort();
     resolveAsk?.({ ok: true, body: "GEMINI_LIVE_OK" });
     const response = await pending;
@@ -77,6 +81,27 @@ describe("Gemini 单标签页连接", () => {
     });
     assert.deepEqual(sent.map((message) => message.type), ["ask", "cancel"]);
     assert.equal(sent.filter((message) => message.type === "ask").length, 1);
+    assert.equal(sent[1]?.requestId, sent[0]?.requestId);
+    assert.equal(request.userPrompt, "只回复 GEMINI_LIVE_OK");
+  });
+
+  it("附标记后超过长度上限时不触碰网页输入框", async () => {
+    const request = { ...providerRequest(), userPrompt: "甲".repeat(20_000) };
+    let read = false;
+    const adapter = createGeminiAdapter({
+      send: (message) => runGeminiTurn({
+        read() { read = true; throw new Error("should not inspect page"); },
+        readPrompt() { throw new Error("should not read composer"); },
+        writePrompt() { throw new Error("should not write composer"); },
+        submit() { throw new Error("should not send"); },
+        watchStop() { return () => undefined; },
+      }, message.prompt),
+    });
+    const result = await adapter.respond(request);
+    assert.equal(result.status, "failed");
+    assert.equal(result.error?.code, "invalid_request");
+    assert.equal(read, false);
+    assert.equal(request.userPrompt.length, 20_000);
   });
 
   it("把有效页面回复映射到 live/complete，把页面失败留作 failed", async () => {

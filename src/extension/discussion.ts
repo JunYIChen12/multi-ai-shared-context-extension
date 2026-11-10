@@ -172,7 +172,9 @@ function showConnectionState(): void {
   const submit = document.querySelector("#record-gap");
   const cross = document.querySelector("#cross");
   if (status) status.textContent = `已临时连接 ${providerName}`;
-  if (detail) detail.textContent = `本轮只发送到当前 ${providerName} 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。`;
+  if (detail) detail.textContent = connectedProvider === "gemini"
+    ? "本轮只发送到当前 Gemini 标签页。实际提问会附一次性校验标记；讨论记录和导出保留你输入的原文。刷新或关闭标签页后需要重新连接。"
+    : `本轮只发送到当前 ${providerName} 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。`;
   if (label) label.textContent = ` ${providerName}（已临时连接）`;
   if (submit instanceof HTMLButtonElement) submit.textContent = "发送第一轮并记录";
   if (cross instanceof HTMLButtonElement) {
