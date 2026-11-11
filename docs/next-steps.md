@@ -4,27 +4,19 @@
 
 ## 已经停在这里
 
-工程基础可以类型检查、单元测试和构建；当前另有实验性的 ChatGPT 单标签页连接器，但真实链路未验收通过，因此还不是可用产品。Grok 和 Gemini 未接入，MOCK 只是演示数据。
+现行状态以 GitHub Issue 为准。工程基础可以类型检查、单元测试和构建，但仓库尚未发布，也还不是可用产品。MOCK 只是演示数据。
 
-在提交 `375cce437315f024ff47393565017785ed91a1e6`、Chrome 156.0.8078.81 上，固定的无敏感测试问题已发送，网页显示 `CHATGPT_LIVE_OK`；扩展返回 `ChatGPT 未在限定时间内开始生成`，没有成功 provider 记录。Task 6 未完成，真实成功与 Markdown/JSONL 文件验收均未完成。Issue #2 保持开放；[复审评论 6676176718](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/2#issuecomment-6676176718)。
+- ChatGPT 单标签页连接器已在候选分支。Issue #2 尚未整体验收；正文提取修复在开放的 [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)，尚未合入候选。
+- Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11)，尚未合入候选。Issue #10 的技术验收未通过。
+- Grok 尚未实现。
 
 ## 1. 单家已登录网页链路探针
 
 这是合并初始化之后的第一件事。只做一家，建议先选用户当前最好登录、页面结构相对稳定的一家。不要三家一起做。
 
-### 当前阻塞
+### 当前关口
 
-观察事实：
-
-- 本轮已对 ChatGPT 做两次真实 DOM 路线尝试。第一次失败表现为发送按钮状态竞态；修正后第二次仍返回 `ChatGPT 未在限定时间内开始生成`，尽管网页显示固定回复 `CHATGPT_LIVE_OK`。
-- 只读取证中，`[data-message-author-role="assistant"]` 数量为 0；回复祖先链没有 `data-message-author-role`、`data-message-id`、`role="article"` 或稳定 `data-testid`，主要只有生成类名。
-- 在提交 `375cce4` 上，`npm run check` 的类型检查、28/28 测试和构建通过。`npm ci` 因系统 npm 缺少 `./cache/policy.js` 失败；这与页面链路失败分开。
-
-判断与决定：
-
-- 上述网页观察仍是当时的记录，不是后续提交的复现，也不能单独当作根因。
-- 已批准的离线修复只替换判定：发送前结构基线、本次 user/assistant 归属、自然结束 / 手停 / 未知分态、`/` 到 `/c/<id>` 的连续性规则、同一标签页单飞，以及外层超时取消。契约见 `docs/chatgpt-evidence-contract.md`。
-- 这批不扩大权限，不把离线 fixture 写成真实页面兼容，也不再靠全页计数或最后一个节点判成功。页面读不到契约字段时结果保持未知。真实网页探针仍未做。
+第 1 步的 ChatGPT 单标签页候选已写出，但 Issue #2 尚未整体验收。后续细节（含 PR #8 是否合入）以对应 Issue 为准。Gemini 不在本步范围内，跟踪在 Issue #10 与 PR #11。Grok 尚未实现。
 
 前置依赖：
 

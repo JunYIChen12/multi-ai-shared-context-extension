@@ -1,6 +1,6 @@
 # 多模型共享上下文
 
-本仓库跟踪 `AI-REQ-20261105-001`。当前有一个实验性的 ChatGPT 单标签页连接器，但真实网页链路尚未验收通过；它不是可用产品，也不是三家网页已接入、可替代人工复制粘贴的 MVP。Grok 和 Gemini 仍未接入。
+本仓库跟踪 `AI-REQ-20261105-001`。候选分支有实验性的 ChatGPT 单标签页连接器，真实网页链路尚未整体验收，也尚未发布。Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11) 中，尚未合入候选。Grok 尚未实现。这不是可用产品。现行状态以 GitHub Issue 为准。
 
 产品形态已确定为 **Google Chrome 浏览器扩展**。侧栏、弹窗或独立扩展页等界面形式，以及网页控制、上下文存储、开源/二开/自研路径仍待验证。
 
@@ -35,16 +35,14 @@ Codex 额度不能当成 ChatGPT 网页版额度。
 - 导出 Markdown 与 JSONL。恢复只解析 JSONL，并强制标成未验证导入。不使用 `chrome.storage` 冒充本地文件。
 - ChatGPT 单标签页实验连接器使用 `activeTab`、`scripting`，通过临时注入脚本连接当前标签页；不声明站点权限。真实链路尚未验收通过。
 
-## 仍未验证
+## 当前状态
 
-- 在 Chrome 156.0.8078.81 的一次真实探针中，固定无敏感问题已发送，网页显示固定回复 `CHATGPT_LIVE_OK`；扩展返回 `ChatGPT 未在限定时间内开始生成`，没有成功 provider 记录。网页显示回复不等于扩展链路成功。
-- 只读取证未发现稳定的回复锚点：`[data-message-author-role="assistant"]` 数量为 0；回复祖先链没有 `data-message-author-role`、`data-message-id`、`role="article"` 或稳定 `data-testid`，主要是生成类名。两次 DOM 路线尝试后已停止，等待重新评审。
-- 尚未完成真实成功记录及 Markdown/JSONL 文件验收。Issue #2 仍开放，复审记录见 [评论 6676176718](https://github.com/JunYIChen12/multi-ai-shared-context-extension/issues/2#issuecomment-6676176718)。
-- Grok、Gemini 仍未接入；本轮记录只涉及固定无敏感测试问题，不包含私人会话或账号信息。
-- `375cce4` 上 `npm run check` 通过：类型检查、28/28 测试、构建成功。当前环境 `npm ci` 因系统 npm 缺少 `./cache/policy.js` 失败；这与网页链路失败无关。
-- 单元测试里的 MOCK 和未接入记录都不是三站实测。
-- 没有续聊编排、取消按钮、自动重试、任务通知或 Drive 搬运。
-- 导入的 `provider` 记录可以被解析，但不能证明它来自真实模型。
+现行状态以 GitHub Issue 为准，本段只作摘要。仓库尚未发布，也还不是可用产品。
+
+- ChatGPT 单标签页连接器在候选分支。Issue #2 尚未整体验收；正文提取修复在开放的 [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)，尚未合入候选。
+- Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11)，尚未合入候选；技术验收未通过，跟踪在 Issue #10。
+- Grok 尚未实现。
+- 没有续聊编排、取消按钮、自动重试、任务通知或 Drive 搬运。单元测试里的 MOCK 和未接入记录都不是三站实测。
 
 ## 本地文件和 Drive 现在到哪一步
 
@@ -86,7 +84,7 @@ npm run build
 3. 加载已解压的扩展，选择 `dist/extension`。
 4. 点击工具栏图标，再打开讨论页。
 
-默认未接入适配器和 `[MOCK]` 演示仍不是模型回答。扩展还提供实验性的 ChatGPT 单标签页连接器，但当前真实探针未验收通过：本次网页显示 `CHATGPT_LIVE_OK`，扩展却超时且没有成功 provider 记录，因此不能把它当作可用的真实连接。「记录未接入尝试」不会访问网站；「运行 MOCK 演示」只在本地生成假数据。导出文件由浏览器下载保存。
+默认未接入适配器和 `[MOCK]` 演示仍不是模型回答。扩展还提供实验性的 ChatGPT 单标签页连接器，但真实链路尚未整体验收，不能把它当作可用的真实连接。「记录未接入尝试」不会访问网站；「运行 MOCK 演示」只在本地生成假数据。导出文件由浏览器下载保存。
 
 ## 安全边界
 
