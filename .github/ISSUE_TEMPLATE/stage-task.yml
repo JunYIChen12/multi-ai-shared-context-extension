@@ -1,6 +1,7 @@
 name: 工作包
 description: 一单一事：一个 Issue 只做一件可验收的事（准则 2）
 title: "工作包："
+labels: ["类型:需求"]
 body:
   - type: input
     id: requirement

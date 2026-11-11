@@ -1,6 +1,7 @@
 name: 缺陷
 description: 报告实际错误，并按原因回到对应阶段（准则 5）
 title: "缺陷："
+labels: ["类型:缺陷"]
 body:
   - type: textarea
     id: fact

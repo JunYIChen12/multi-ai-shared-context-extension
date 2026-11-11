@@ -1,6 +1,7 @@
 name: 假设 / 探针
 description: 先用最小真实实验证实或否定一个关键假设，再设计和开发（准则 1）
 title: "探针："
+labels: ["类型:需求"]
 body:
   - type: textarea
     id: assumption
