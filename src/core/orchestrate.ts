@@ -18,6 +18,7 @@ export interface OrchestratorOptions {
   clock: Clock;
   adapters: ProviderAdapter[];
   timeoutMs?: number;
+  timeoutMsByProvider?: Partial<Record<ProviderId, number>>;
   maxRounds?: number;
 }
 
@@ -211,7 +212,7 @@ export async function callAdapter(
     userPrompt,
     injection,
   };
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMsByProvider?.[providerId] ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const pending = adapter.respond(request, { signal: controller.signal });

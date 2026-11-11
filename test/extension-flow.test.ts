@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createTestClock } from "../src/core/clock.js";
 import { createSession, runIndependentRound } from "../src/core/orchestrate.js";
-import { exportSession } from "../src/core/persist.js";
+import { exportSession, parseSessionJsonl } from "../src/core/persist.js";
 import {
   CHATGPT_CHANNEL,
   createChatGptAdapter,
@@ -17,7 +17,7 @@ import {
 } from "../src/extension/gemini-connector.js";
 import type { ProviderRequest } from "../src/core/types.js";
 
-describe("扩展单标签页链路", () => {
+describe("扩展消息链路", () => {
   it("把 ChatGPT 当前标签页结果写入本地导出且不泄露 tab ID", async () => {
     const sent: Array<{ tabId: number; request: ChatGptAskRequest }> = [];
     const adapter = createChatGptAdapter(
@@ -106,6 +106,61 @@ describe("扩展单标签页链路", () => {
       error: { code: "cancelled", message: "采集已取消，不会再发送或提交结果" },
     });
     assert.deepEqual(sent.map((request) => request.type), ["ask", "cancel"]);
+  });
+
+  it("同一轮并行发送给两家，乱序完成仍按各自 provider 导出", async () => {
+    const sent: Array<{ provider: string; tabId: number; prompt: string }> = [];
+    const completed: string[] = [];
+    const chatgpt = createChatGptAdapter(createChatGptTabTransport(42, {
+      async sendToTab(tabId, request) {
+        if (request.type !== "ask") return { ok: true };
+        sent.push({ provider: "chatgpt", tabId, prompt: request.prompt });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        completed.push("chatgpt");
+        return { ok: true, body: "CHATGPT_DUAL_OK" };
+      },
+    }));
+    const gemini = createGeminiAdapter(createGeminiTabTransport(73, {
+      async sendToTab(tabId, request) {
+        if (request.type === "ask") {
+          sent.push({ provider: "gemini", tabId, prompt: request.prompt });
+          completed.push("gemini");
+          return { ok: true, body: "GEMINI_DUAL_OK" };
+        }
+        return { ok: true };
+      },
+    }));
+    const options = { clock: createTestClock(), adapters: [chatgpt, gemini], timeoutMs: 1000, maxRounds: 2 };
+    const created = createSession("同一条无敏感问题", options);
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+
+    const ran = await runIndependentRound(created.session, options);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) return;
+    const replies = ran.session.messages.filter((message) => message.role === "assistant");
+    assert.deepEqual(replies.map((message) => [message.providerId, message.body]), [
+      ["chatgpt", "CHATGPT_DUAL_OK"],
+      ["gemini", "GEMINI_DUAL_OK"],
+    ]);
+    assert.deepEqual(sent.map(({ provider, tabId }) => [provider, tabId]), [["chatgpt", 42], ["gemini", 73]]);
+    assert.deepEqual(completed, ["gemini", "chatgpt"]);
+    assert.equal(sent.find((item) => item.provider === "chatgpt")?.prompt, "同一条无敏感问题");
+    assert.match(sent.find((item) => item.provider === "gemini")?.prompt ?? "", /^同一条无敏感问题\n\n\[本次校验:/);
+
+    const exported = exportSession(ran.session);
+    assert.match(exported.markdown, /CHATGPT_DUAL_OK/);
+    assert.match(exported.markdown, /GEMINI_DUAL_OK/);
+    assert.doesNotMatch(exported.markdown, /chatgptTab|geminiTab|tabId/);
+    const parsed = parseSessionJsonl(exported.jsonl);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(parsed.session.schemaVersion, 1);
+    assert.deepEqual(
+      parsed.session.messages.filter((message) => message.role === "assistant")
+        .map((message) => [message.providerId, message.body]),
+      [["chatgpt", "CHATGPT_DUAL_OK"], ["gemini", "GEMINI_DUAL_OK"]],
+    );
   });
 });
 
