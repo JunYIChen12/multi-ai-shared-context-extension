@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "多模型共享上下文（工程壳）",
   "version": "0.0.1",
-  "description": "用户主动连接一个 ChatGPT 标签页；Grok、Gemini 未接入。",
+  "description": "用户主动连接一个 ChatGPT 或 Gemini 标签页；Grok 未接入。",
   "action": {
     "default_popup": "popup.html",
     "default_title": "多模型协作工程壳（未接入）"

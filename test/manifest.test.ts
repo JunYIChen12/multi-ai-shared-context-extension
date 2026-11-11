@@ -52,13 +52,14 @@ describe("扩展壳边界", () => {
     }
   });
 
-  it("构建按需注入的 ChatGPT 内容脚本且不声明常驻内容脚本", () => {
+  it("构建按需注入的 ChatGPT 与 Gemini 内容脚本且不声明常驻内容脚本", () => {
     const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/build.ts"], {
       cwd: root,
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.doesNotThrow(() => readFileSync(path.join(root, "dist/extension/chatgpt-content.js")));
+    assert.doesNotThrow(() => readFileSync(path.join(root, "dist/extension/gemini-content.js")));
 
     const manifest = JSON.parse(readFileSync(path.join(root, "dist/extension/manifest.json"), "utf8")) as {
       content_scripts?: unknown;

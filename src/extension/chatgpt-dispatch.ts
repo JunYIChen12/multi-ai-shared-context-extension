@@ -1,13 +1,15 @@
-import type { ChatGptAskResult } from "./chatgpt-connector.js";
+export type CollectionResult = { ok: true; body: string } | { ok: false; code: string; message: string };
 
 /**
  * 同一个标签页里的单飞锁。多个讨论页发到这个内容脚本时共用这一把锁。
  * 重复的 requestId，或锁被占用时的另一请求，都不会再次进入发送。
  */
-export function createCollectionGate(
-  run: (prompt: string, signal: AbortSignal) => Promise<ChatGptAskResult>,
+export function createCollectionGate<Result extends CollectionResult>(
+  run: (prompt: string, signal: AbortSignal) => Promise<Result>,
+  duplicateResult: Result,
+  busyResult: Result,
 ): {
-  ask(requestId: string, prompt: string): Promise<ChatGptAskResult>;
+  ask(requestId: string, prompt: string): Promise<Result>;
   cancel(requestId: string): void;
 } {
   let active: { requestId: string; abort: () => void } | null = null;
@@ -16,18 +18,10 @@ export function createCollectionGate(
   return {
     async ask(requestId, prompt) {
       if (!requestId || finished.has(requestId) || active?.requestId === requestId) {
-        return {
-          ok: false,
-          code: "in_flight",
-          message: "同一请求正在处理或已经结束，不会再次发送",
-        };
+        return duplicateResult;
       }
       if (active) {
-        return {
-          ok: false,
-          code: "in_flight",
-          message: "这个标签页已有进行中的采集，不会再次发送",
-        };
+        return busyResult;
       }
       const controller = new AbortController();
       active = { requestId, abort: () => controller.abort() };

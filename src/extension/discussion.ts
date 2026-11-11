@@ -6,14 +6,30 @@ import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
 import { PROVIDER_IDS } from "../core/types.js";
 import { createChatGptAdapter, createChatGptTabTransport, readChatGptTabId } from "./chatgpt-connector.js";
-import { providerIdsForMode } from "./provider-selection.js";
+import { createGeminiAdapter, createGeminiTabTransport, readGeminiTabId } from "./gemini-connector.js";
+import { providerIdsForMode, timeoutMsForRound, type ConnectedProviderId } from "./provider-selection.js";
 
 let session: Session | null = null;
 const chatGptTabId = readChatGptTabId(window.location.search);
-const liveChatGptAdapter = chatGptTabId === null
+const geminiTabId = readGeminiTabId(window.location.search);
+const connectedProvider: ConnectedProviderId | null = chatGptTabId !== null && geminiTabId === null
+  ? "chatgpt"
+  : geminiTabId !== null && chatGptTabId === null
+    ? "gemini"
+    : null;
+const liveChatGptAdapter = connectedProvider !== "chatgpt" || chatGptTabId === null
   ? null
   : createChatGptAdapter(
       createChatGptTabTransport(chatGptTabId, {
+        sendToTab(tabId, request) {
+          return chrome.tabs.sendMessage(tabId, request);
+        },
+      }),
+    );
+const liveGeminiAdapter = connectedProvider !== "gemini" || geminiTabId === null
+  ? null
+  : createGeminiAdapter(
+      createGeminiTabTransport(geminiTabId, {
         sendToTab(tabId, request) {
           return chrome.tabs.sendMessage(tabId, request);
         },
@@ -28,7 +44,7 @@ const form = document.querySelector("#ask");
 
 form?.addEventListener("submit", (event) => {
   event.preventDefault();
-  void runRound(chatGptTabId === null ? "unimplemented" : "live");
+  void runRound(connectedProvider === null ? "unimplemented" : "live");
 });
 
 document.querySelector("#run-mock")?.addEventListener("click", () => {
@@ -62,7 +78,12 @@ async function runRound(mode: "mock" | "unimplemented" | "live"): Promise<void> 
   clearError();
   const prompt = promptInput instanceof HTMLTextAreaElement ? promptInput.value : "";
   const adapters = selectedAdapters(mode);
-  const options = { clock: systemClock(), adapters, timeoutMs: 30_000, maxRounds: 2 };
+  const options = {
+    clock: systemClock(),
+    adapters,
+    timeoutMs: timeoutMsForRound(mode, connectedProvider ?? "chatgpt"),
+    maxRounds: 2,
+  };
   const created = createSession(prompt, options);
   if (!created.ok) {
     showError(created.detail);
@@ -86,10 +107,15 @@ async function runSecondRound(): Promise<void> {
     return;
   }
   const ids = selectedProviderIds();
+  const mode = adapterModeForSession(session);
   const ran = await runCrossReview(
     session,
     { sourceProviderIds: ids, targetProviderIds: ids },
-    { clock: systemClock(), adapters: selectedAdapters(adapterModeForSession(session)), timeoutMs: 30_000 },
+    {
+      clock: systemClock(),
+      adapters: selectedAdapters(mode),
+      timeoutMs: timeoutMsForRound(mode, connectedProvider ?? "chatgpt"),
+    },
   );
   if (!ran.ok) {
     showError(ran.detail);
@@ -100,12 +126,15 @@ async function runSecondRound(): Promise<void> {
 }
 
 function selectedAdapters(mode: "mock" | "unimplemented" | "live"): ProviderAdapter[] {
-  return providerIdsForMode(mode, selectedProviderIds()).map((id) => {
+  return providerIdsForMode(mode, selectedProviderIds(), connectedProvider ?? "chatgpt").map((id) => {
     if (mode === "mock") {
       return mockAdapter(id);
     }
     if (mode === "live" && id === "chatgpt" && liveChatGptAdapter) {
       return liveChatGptAdapter;
+    }
+    if (mode === "live" && id === "gemini" && liveGeminiAdapter) {
+      return liveGeminiAdapter;
     }
     return unimplementedAdapter(id);
   });
@@ -133,23 +162,27 @@ function adapterModeForSession(current: Session): "mock" | "unimplemented" | "li
 }
 
 function showConnectionState(): void {
-  if (chatGptTabId === null) {
+  if (connectedProvider === null) {
     return;
   }
   const status = document.querySelector("#connection-status");
   const detail = document.querySelector("#connection-detail");
-  const label = document.querySelector("#chatgpt-label");
+  const providerName = connectedProvider === "gemini" ? "Gemini" : "ChatGPT";
+  const label = document.querySelector(`#${connectedProvider}-label`);
   const submit = document.querySelector("#record-gap");
   const cross = document.querySelector("#cross");
-  if (status) status.textContent = "已临时连接 ChatGPT";
-  if (detail) detail.textContent = "只连接当前标签页；Grok、Gemini 未接入。刷新或关闭标签页后需要重新连接。";
-  if (label) label.textContent = " ChatGPT（已临时连接）";
+  if (status) status.textContent = `已临时连接 ${providerName}`;
+  if (detail) detail.textContent = connectedProvider === "gemini"
+    ? "本轮只发送到当前 Gemini 标签页。实际提问会附一次性校验标记；讨论记录和导出保留你输入的原文。刷新或关闭标签页后需要重新连接。"
+    : `本轮只发送到当前 ${providerName} 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。`;
+  if (label) label.textContent = ` ${providerName}（已临时连接）`;
   if (submit instanceof HTMLButtonElement) submit.textContent = "发送第一轮并记录";
   if (cross instanceof HTMLButtonElement) {
     cross.disabled = true;
-    cross.title = "本轮仅批准 ChatGPT 第一轮连接";
+    cross.title = `本轮仅批准 ${providerName} 第一轮连接`;
   }
-  for (const id of ["grok", "gemini"]) {
+  for (const id of ["chatgpt", "grok", "gemini"]) {
+    if (id === connectedProvider) continue;
     const checkbox = document.querySelector<HTMLInputElement>(`input[value="${id}"]`);
     if (checkbox) {
       checkbox.checked = false;

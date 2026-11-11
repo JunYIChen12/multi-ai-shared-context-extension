@@ -35,20 +35,25 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
           runs += 1;
           release = () => resolve({ ok: true, body: "held" });
         }),
+      { ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送" },
+      { ok: false, code: "in_flight", message: "这个标签页已有进行中的采集，不会再次发送" },
     );
     const first = gate.ask("request-a", "one");
     const second = await gate.ask("request-b", "two");
     const duplicate = await gate.ask("request-a", "one-again");
-    assert.equal(second.ok, false);
-    if (!second.ok) assert.equal(second.code, "in_flight");
-    assert.equal(duplicate.ok, false);
-    if (!duplicate.ok) assert.equal(duplicate.code, "in_flight");
+    assert.deepEqual(second, {
+      ok: false, code: "in_flight", message: "这个标签页已有进行中的采集，不会再次发送",
+    });
+    assert.deepEqual(duplicate, {
+      ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送",
+    });
     assert.equal(runs, 1);
     release();
     assert.deepEqual(await first, { ok: true, body: "held" });
     const replay = await gate.ask("request-a", "after");
-    assert.equal(replay.ok, false);
-    if (!replay.ok) assert.equal(replay.code, "in_flight");
+    assert.deepEqual(replay, {
+      ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送",
+    });
     assert.equal(runs, 1);
   });
 
@@ -112,6 +117,8 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
         },
         signal,
       ),
+      { ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送" },
+      { ok: false, code: "in_flight", message: "这个标签页已有进行中的采集，不会再次发送" },
     );
     const firstPromise = gate.ask("round-1", "第一问");
     await ready;
