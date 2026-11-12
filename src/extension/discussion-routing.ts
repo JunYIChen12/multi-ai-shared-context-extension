@@ -140,6 +140,22 @@ export function providerForTabId(connected: ConnectedTabIds, tabId: number): Con
   return matches.length === 1 ? matches[0] ?? null : null;
 }
 
+export function shouldDisconnectOnTabUpdate(
+  providerId: ConnectedProviderId,
+  changeInfo: { status?: string; url?: string },
+): boolean {
+  if (changeInfo.url !== undefined) {
+    try {
+      const url = new URL(changeInfo.url);
+      const hostname = providerId === "chatgpt" ? "chatgpt.com" : "gemini.google.com";
+      return url.protocol !== "https:" || url.hostname !== hostname;
+    } catch {
+      return true;
+    }
+  }
+  return changeInfo.status === "loading";
+}
+
 function isTabId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }

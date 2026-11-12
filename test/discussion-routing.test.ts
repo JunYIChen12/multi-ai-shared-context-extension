@@ -11,6 +11,7 @@ import {
   providerForTabId,
   readConnectedTabIds,
   sameDiscussionDestination,
+  shouldDisconnectOnTabUpdate,
 } from "../src/extension/discussion-routing.js";
 
 const discussionUrl = "chrome-extension://abcdefghijklmnop/discussion.html";
@@ -94,6 +95,34 @@ describe("讨论页连接路由", () => {
     assert.equal(canAttachProvider(connected, "gemini", 73), true);
     assert.equal(providerForTabId({ chatgpt: 17, gemini: 73 }, 73), "gemini");
     assert.equal(providerForTabId({ chatgpt: 17, gemini: 17 }, 17), null);
+  });
+
+  it("站内地址变化不应断开，刷新或离开站点仍应断开", () => {
+    assert.equal(
+      shouldDisconnectOnTabUpdate("chatgpt", { status: "loading", url: "https://chatgpt.com/c/new" }),
+      false,
+    );
+    assert.equal(
+      shouldDisconnectOnTabUpdate("gemini", { status: "loading", url: "https://gemini.google.com/app/new" }),
+      false,
+    );
+    assert.equal(shouldDisconnectOnTabUpdate("chatgpt", { status: "loading" }), true);
+    assert.equal(
+      shouldDisconnectOnTabUpdate("gemini", { status: "loading", url: "https://example.com/" }),
+      true,
+    );
+    assert.equal(
+      shouldDisconnectOnTabUpdate("chatgpt", { url: "https://example.com/" }),
+      true,
+    );
+    assert.equal(
+      shouldDisconnectOnTabUpdate("gemini", { url: "https://gemini.google.com/app/new" }),
+      false,
+    );
+    assert.equal(
+      shouldDisconnectOnTabUpdate("chatgpt", { status: "complete", url: "https://chatgpt.com/c/new" }),
+      false,
+    );
   });
 });
 

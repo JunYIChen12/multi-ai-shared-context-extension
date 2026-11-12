@@ -14,6 +14,7 @@ import {
   isConnectionRequest,
   providerForTabId,
   readConnectedTabIds,
+  shouldDisconnectOnTabUpdate,
   type ConnectionRequest,
   type ConnectionRejectionCode,
   type ConnectedProviderId,
@@ -81,7 +82,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener(disconnectTab);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading") disconnectTab(tabId);
+  const providerId = providerForTabId(connectedTabs, tabId);
+  if (providerId && shouldDisconnectOnTabUpdate(providerId, changeInfo)) disconnectTab(tabId);
 });
 
 showConnectionState();
