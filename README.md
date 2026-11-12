@@ -1,6 +1,6 @@
 # 多模型共享上下文
 
-本仓库跟踪 `AI-REQ-20261105-001`。候选分支有实验性的 ChatGPT 单标签页连接器，真实网页链路尚未整体验收，也尚未发布。Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11) 中，尚未合入候选。Grok 尚未实现。这不是可用产品。现行状态以 GitHub Issue 为准。
+本仓库跟踪 `AI-REQ-20261105-001`。main 已有 MVP：ChatGPT 与 Gemini 可在同一讨论页同时连接、同发、分别收回复（Issue #14、#16 已验收，2026-11-12 合进 main）。尚未发布，Grok 尚未实现。现行状态以 GitHub Issue 为准。
 
 产品形态已确定为 **Google Chrome 浏览器扩展**。侧栏、弹窗或独立扩展页等界面形式，以及网页控制、上下文存储、开源/二开/自研路径仍待验证。
 
@@ -20,7 +20,7 @@ Codex 额度不能当成 ChatGPT 网页版额度。
 | 项目 | 本仓库状态 |
 | --- | --- |
 | Chrome MV3 扩展 | 产品形态已确定；已有最小可加载工程壳，用来验证界面和本地导出 |
-| 已登录网页的受控读取 | 有实验性的 ChatGPT 单标签页连接器，使用 `activeTab`、`scripting`，不声明站点权限；真实链路未验收通过 |
+| 已登录网页的受控读取 | ChatGPT、Gemini 单标签页连接器及双连接 MVP，使用 `activeTab`、`scripting`，不声明站点权限；MVP 已验收（#6、#10、#14、#16） |
 | 本地中控加标签页、油猴类自动化 | 未选 |
 | Codex CLI 作为 GPT 一路 | 未选，且不能默认等同网页聊天额度 |
 | Drive 文件队列、远程 MCP、Tailscale | 约定或候选。本仓库不连接、不常驻 |
@@ -37,12 +37,12 @@ Codex 额度不能当成 ChatGPT 网页版额度。
 
 ## 当前状态
 
-现行状态以 GitHub Issue 为准，本段只作摘要。仓库尚未发布，也还不是可用产品。
+现行状态以 GitHub Issue 为准，本段只作摘要。仓库尚未发布。
 
-- ChatGPT 单标签页连接器在候选分支。Issue #2 尚未整体验收；正文提取修复在开放的 [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)，尚未合入候选。
-- Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11)，尚未合入候选；技术验收未通过，跟踪在 Issue #10。
-- Grok 尚未实现。
-- 没有续聊编排、取消按钮、自动重试、任务通知或 Drive 搬运。单元测试里的 MOCK 和未接入记录都不是三站实测。
+- 已进 main 并通过 MVP 验收：三家统一框架（#6）、Gemini 单标签页连接（#10）、ChatGPT 与 Gemini 双连接（#14）、站内换网址不再误断开（#16）。
+- 已知问题：ChatGPT 正文带角色标题前缀（#5，修复在 [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)，未决定）；整页跳转后提示“未接入”而不是“已断开”；#14 部分反例未做真实页面测试。
+- ChatGPT 真实采集与落盘的整体验收（#2）暂缓。
+- Grok 尚未实现。没有取消按钮、自动重试、任务通知或 Drive 搬运。
 
 ## 本地文件和 Drive 现在到哪一步
 

@@ -4,11 +4,11 @@
 
 ## 已经停在这里
 
-现行状态以 GitHub Issue 为准。工程基础可以类型检查、单元测试和构建，但仓库尚未发布，也还不是可用产品。MOCK 只是演示数据。
+现行状态以 GitHub Issue 为准。仓库尚未发布。
 
-- ChatGPT 单标签页连接器已在候选分支。Issue #2 尚未整体验收；正文提取修复在开放的 [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)，尚未合入候选。
-- Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11)，尚未合入候选。Issue #10 的技术验收未通过。
-- Grok 尚未实现。
+- main 已有 ChatGPT 与 Gemini 双连接 MVP（#6、#10、#14、#16 已验收，2026-11-12 合进 main）。
+- 未决：#5 / [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)；#2 暂缓。
+- Grok 尚未实现。下文第 1、2 步按双家已部分完成理解，后续顺序以 Issue 为准。
 
 ## 1. 单家已登录网页链路探针
 
