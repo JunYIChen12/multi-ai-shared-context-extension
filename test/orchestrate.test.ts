@@ -125,6 +125,47 @@ describe("独立回答", () => {
     assert.equal(reply?.status, "complete");
   });
 
+  it("每家独立超时，超时的一家留空，另一家可并行完成", async () => {
+    let chatgptCalls = 0;
+    let geminiCalls = 0;
+    const chatgpt: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond(_request, context) {
+        chatgptCalls += 1;
+        return await new Promise((resolve) => {
+          context?.signal?.addEventListener("abort", () => {
+            resolve({ mode: "live", status: "cancelled", body: "迟到正文" });
+          }, { once: true });
+        });
+      },
+    };
+    const gemini: ProviderAdapter = {
+      id: "gemini",
+      mode: "live",
+      async respond() {
+        geminiCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return { mode: "live", status: "complete", body: "GEMINI_ON_TIME" };
+      },
+    };
+    const opts: OrchestratorOptions = {
+      ...options([chatgpt, gemini], 80),
+      timeoutMsByProvider: { chatgpt: 5, gemini: 80 },
+    };
+    const ran = await runIndependentRound(await started("各自计时", opts), opts);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) return;
+    const byId = new Map(ran.session.messages.map((message) => [message.providerId, message]));
+    assert.equal(byId.get("chatgpt")?.status, "timeout");
+    assert.equal(byId.get("chatgpt")?.body, "");
+    assert.match(byId.get("chatgpt")?.errorMessage ?? "", /超过 5ms/);
+    assert.equal(byId.get("gemini")?.status, "complete");
+    assert.equal(byId.get("gemini")?.body, "GEMINI_ON_TIME");
+    assert.equal(chatgptCalls, 1);
+    assert.equal(geminiCalls, 1);
+  });
+
   it("默认适配器全部未接入，且不会变成可注入观点", async () => {
     const opts = options(defaultAdapters());
     const session = await started("同一个问题", opts);

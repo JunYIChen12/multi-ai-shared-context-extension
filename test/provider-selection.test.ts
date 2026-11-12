@@ -4,13 +4,19 @@ import { providerForTabUrl, providerIdsForMode, timeoutMsForRound } from "../src
 
 describe("讨论页来源选择", () => {
   it("正式连接最多选择 ChatGPT，且尊重用户取消勾选", () => {
-    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok", "gemini"]), ["chatgpt"]);
-    assert.deepEqual(providerIdsForMode("live", ["grok", "gemini"]), []);
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok", "gemini"], ["chatgpt"]), ["chatgpt"]);
+    assert.deepEqual(providerIdsForMode("live", ["grok", "gemini"], ["chatgpt"]), []);
   });
 
   it("Gemini 连接只选择 Gemini，不把 ChatGPT 或 Grok 混入本次正式发送", () => {
-    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok", "gemini"], "gemini"), ["gemini"]);
-    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok"], "gemini"), []);
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok", "gemini"], ["gemini"]), ["gemini"]);
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "grok"], ["gemini"]), []);
+  });
+
+  it("允许单选或同时选择已连接的 ChatGPT 与 Gemini", () => {
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt"], ["chatgpt", "gemini"]), ["chatgpt"]);
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "gemini"], ["chatgpt", "gemini"]), ["chatgpt", "gemini"]);
+    assert.deepEqual(providerIdsForMode("live", ["chatgpt", "gemini"], ["chatgpt"]), ["chatgpt"]);
   });
 
   it("MOCK 与正式勾选无关，未连接记录保持原选择", () => {

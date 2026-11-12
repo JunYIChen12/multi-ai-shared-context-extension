@@ -5,36 +5,27 @@ import { exportSession, parseSessionFile } from "../core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
 import { PROVIDER_IDS } from "../core/types.js";
-import { createChatGptAdapter, createChatGptTabTransport, readChatGptTabId } from "./chatgpt-connector.js";
-import { createGeminiAdapter, createGeminiTabTransport, readGeminiTabId } from "./gemini-connector.js";
-import { providerIdsForMode, timeoutMsForRound, type ConnectedProviderId } from "./provider-selection.js";
+import { createChatGptAdapter, createChatGptTabTransport } from "./chatgpt-connector.js";
+import { createGeminiAdapter, createGeminiTabTransport } from "./gemini-connector.js";
+import { CHATGPT_OUTER_TIMEOUT_MS, providerIdsForMode, timeoutMsForRound } from "./provider-selection.js";
+import {
+  connectionRejectionCode,
+  findDiscussionDestination,
+  isConnectionRequest,
+  providerForTabId,
+  readConnectedTabIds,
+  shouldDisconnectOnTabUpdate,
+  type ConnectionRequest,
+  type ConnectionRejectionCode,
+  type ConnectedProviderId,
+  type ConnectedTabIds,
+} from "./discussion-routing.js";
 
 let session: Session | null = null;
-const chatGptTabId = readChatGptTabId(window.location.search);
-const geminiTabId = readGeminiTabId(window.location.search);
-const connectedProvider: ConnectedProviderId | null = chatGptTabId !== null && geminiTabId === null
-  ? "chatgpt"
-  : geminiTabId !== null && chatGptTabId === null
-    ? "gemini"
-    : null;
-const liveChatGptAdapter = connectedProvider !== "chatgpt" || chatGptTabId === null
-  ? null
-  : createChatGptAdapter(
-      createChatGptTabTransport(chatGptTabId, {
-        sendToTab(tabId, request) {
-          return chrome.tabs.sendMessage(tabId, request);
-        },
-      }),
-    );
-const liveGeminiAdapter = connectedProvider !== "gemini" || geminiTabId === null
-  ? null
-  : createGeminiAdapter(
-      createGeminiTabTransport(geminiTabId, {
-        sendToTab(tabId, request) {
-          return chrome.tabs.sendMessage(tabId, request);
-        },
-      }),
-    );
+const urlConnectedTabs = readConnectedTabIds(window.location.search);
+const connectedTabs: ConnectedTabIds = { ...urlConnectedTabs };
+const disconnectedProviders = new Set<ConnectedProviderId>();
+let connectionsReady = false;
 
 const promptInput = document.querySelector("#prompt");
 const summary = document.querySelector("#summary");
@@ -44,7 +35,7 @@ const form = document.querySelector("#ask");
 
 form?.addEventListener("submit", (event) => {
   event.preventDefault();
-  void runRound(connectedProvider === null ? "unimplemented" : "live");
+  void runRound(connectedProviderIds().length === 0 ? "unimplemented" : "live");
 });
 
 document.querySelector("#run-mock")?.addEventListener("click", () => {
@@ -72,18 +63,40 @@ document.querySelector("#import-jsonl")?.addEventListener("change", (event) => {
   void restoreFromFile(file);
 });
 
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message !== "object" || message.channel !== "multi-ai-discussion-connect-v1") return false;
+  if (!isConnectionRequest(message)) {
+    sendResponse({ ok: false, code: "INVALID_REQUEST" });
+    return false;
+  }
+  if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("popup.html")) {
+    sendResponse({ ok: false, code: "INVALID_SENDER", targetDiscussionTabId: message.targetDiscussionTabId });
+    return false;
+  }
+  void attachConnection(message).then(
+    (code) => sendResponse({ ok: code === null, code, targetDiscussionTabId: message.targetDiscussionTabId }),
+    () => sendResponse({ ok: false, code: "ACK_INVALID", targetDiscussionTabId: message.targetDiscussionTabId }),
+  );
+  return true;
+});
+
+chrome.tabs.onRemoved.addListener(disconnectTab);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  const providerId = providerForTabId(connectedTabs, tabId);
+  if (providerId && shouldDisconnectOnTabUpdate(providerId, changeInfo)) disconnectTab(tabId);
+});
+
 showConnectionState();
+void validateConnectedTabs();
 
 async function runRound(mode: "mock" | "unimplemented" | "live"): Promise<void> {
   clearError();
+  if (!connectionsReady) {
+    showError("正在确认连接状态，请稍后再发送。");
+    return;
+  }
   const prompt = promptInput instanceof HTMLTextAreaElement ? promptInput.value : "";
-  const adapters = selectedAdapters(mode);
-  const options = {
-    clock: systemClock(),
-    adapters,
-    timeoutMs: timeoutMsForRound(mode, connectedProvider ?? "chatgpt"),
-    maxRounds: 2,
-  };
+  const options = orchestrationOptions(mode);
   const created = createSession(prompt, options);
   if (!created.ok) {
     showError(created.detail);
@@ -102,6 +115,10 @@ async function runRound(mode: "mock" | "unimplemented" | "live"): Promise<void> 
 
 async function runSecondRound(): Promise<void> {
   clearError();
+  if (!connectionsReady) {
+    showError("正在确认连接状态，请稍后再试。");
+    return;
+  }
   if (!session) {
     showError("还没有第一轮记录。");
     return;
@@ -111,11 +128,7 @@ async function runSecondRound(): Promise<void> {
   const ran = await runCrossReview(
     session,
     { sourceProviderIds: ids, targetProviderIds: ids },
-    {
-      clock: systemClock(),
-      adapters: selectedAdapters(mode),
-      timeoutMs: timeoutMsForRound(mode, connectedProvider ?? "chatgpt"),
-    },
+    orchestrationOptions(mode),
   );
   if (!ran.ok) {
     showError(ran.detail);
@@ -126,18 +139,48 @@ async function runSecondRound(): Promise<void> {
 }
 
 function selectedAdapters(mode: "mock" | "unimplemented" | "live"): ProviderAdapter[] {
-  return providerIdsForMode(mode, selectedProviderIds(), connectedProvider ?? "chatgpt").map((id) => {
+  return providerIdsForMode(mode, selectedProviderIds(), connectedProviderIds()).map((id) => {
     if (mode === "mock") {
       return mockAdapter(id);
     }
-    if (mode === "live" && id === "chatgpt" && liveChatGptAdapter) {
-      return liveChatGptAdapter;
+    if (mode === "live" && id === "chatgpt" && connectedTabs.chatgpt !== undefined) {
+      return createChatGptAdapter(createChatGptTabTransport(connectedTabs.chatgpt, {
+        sendToTab(tabId, request) {
+          return chrome.tabs.sendMessage(tabId, request);
+        },
+      }));
     }
-    if (mode === "live" && id === "gemini" && liveGeminiAdapter) {
-      return liveGeminiAdapter;
+    if (mode === "live" && id === "gemini" && connectedTabs.gemini !== undefined) {
+      return createGeminiAdapter(createGeminiTabTransport(connectedTabs.gemini, {
+        sendToTab(tabId, request) {
+          return chrome.tabs.sendMessage(tabId, request);
+        },
+      }));
     }
     return unimplementedAdapter(id);
   });
+}
+
+function orchestrationOptions(mode: "mock" | "unimplemented" | "live") {
+  const adapters = selectedAdapters(mode);
+  const timeoutMsByProvider = Object.fromEntries(
+    adapters.filter((adapter) => adapter.mode === "live")
+      .map((adapter) => [adapter.id, timeoutMsForRound("live", adapter.id)]),
+  );
+  return {
+    clock: systemClock(),
+    adapters,
+    timeoutMs: Math.max(
+      CHATGPT_OUTER_TIMEOUT_MS,
+      ...Object.values(timeoutMsByProvider).filter((value): value is number => typeof value === "number"),
+    ),
+    timeoutMsByProvider,
+    maxRounds: 2,
+  };
+}
+
+function connectedProviderIds(): ConnectedProviderId[] {
+  return (["chatgpt", "gemini"] as const).filter((providerId) => connectedTabs[providerId] !== undefined);
 }
 
 function selectedProviderIds(): ProviderId[] {
@@ -162,33 +205,155 @@ function adapterModeForSession(current: Session): "mock" | "unimplemented" | "li
 }
 
 function showConnectionState(): void {
-  if (connectedProvider === null) {
-    return;
-  }
   const status = document.querySelector("#connection-status");
   const detail = document.querySelector("#connection-detail");
-  const providerName = connectedProvider === "gemini" ? "Gemini" : "ChatGPT";
-  const label = document.querySelector(`#${connectedProvider}-label`);
   const submit = document.querySelector("#record-gap");
   const cross = document.querySelector("#cross");
-  if (status) status.textContent = `已临时连接 ${providerName}`;
-  if (detail) detail.textContent = connectedProvider === "gemini"
-    ? "本轮只发送到当前 Gemini 标签页。实际提问会附一次性校验标记；讨论记录和导出保留你输入的原文。刷新或关闭标签页后需要重新连接。"
-    : `本轮只发送到当前 ${providerName} 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。`;
-  if (label) label.textContent = ` ${providerName}（已临时连接）`;
-  if (submit instanceof HTMLButtonElement) submit.textContent = "发送第一轮并记录";
-  if (cross instanceof HTMLButtonElement) {
-    cross.disabled = true;
-    cross.title = `本轮仅批准 ${providerName} 第一轮连接`;
-  }
-  for (const id of ["chatgpt", "grok", "gemini"]) {
-    if (id === connectedProvider) continue;
-    const checkbox = document.querySelector<HTMLInputElement>(`input[value="${id}"]`);
-    if (checkbox) {
-      checkbox.checked = false;
-      checkbox.disabled = true;
+  const providers = connectedProviderIds();
+  const disconnected = [...disconnectedProviders];
+  const names = providers.map(providerName);
+  if (status) {
+    if (providers.length > 0) {
+      const suffix = disconnected.length > 0 ? `；${disconnected.map(providerName).join("、")}已断开` : "";
+      status.textContent = `已临时连接 ${names.join("、")}${suffix}`;
+    } else {
+      status.textContent = disconnected.length > 0 ? "连接已断开" : "未连接";
     }
   }
+  let connectionDetail = "请从已登录的 ChatGPT 或 Gemini 标签页点击扩展连接。Grok 未接入。";
+  if (detail) {
+    if (providers.length === 1 && providers[0] === "gemini") {
+      connectionDetail = "本轮只发送到当前 Gemini 标签页。实际提问会附一次性校验标记；讨论记录和导出保留你输入的原文。刷新或关闭标签页后需要重新连接。";
+    } else if (providers.length === 1) {
+      connectionDetail = "本轮只发送到当前 ChatGPT 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。";
+    } else if (providers.length === 2) {
+      connectionDetail = "本轮会并行发送到已连接的 ChatGPT 与 Gemini 标签页。Gemini 提问会附一次性校验标记；两家分别按自己的规则认领回复。刷新或关闭对应标签页后，该家连接会断开。";
+    } else if (disconnected.length > 0) {
+      connectionDetail = `${disconnected.map(providerName).join("、")}标签页已刷新或关闭，请重新点击扩展连接。`;
+    }
+    if (providers.length > 0 && disconnected.length > 0) {
+      connectionDetail += ` ${disconnected.map(providerName).join("、")}已断开，请重新连接。`;
+    }
+    detail.textContent = connectionDetail;
+  }
+  if (submit instanceof HTMLButtonElement) {
+    submit.textContent = providers.length > 0 ? "发送第一轮并记录" : "记录未接入尝试";
+    submit.disabled = !connectionsReady;
+  }
+  if (cross instanceof HTMLButtonElement) {
+    const hasLiveSession = session?.messages.some((message) => message.adapterMode === "live") ?? false;
+    cross.disabled = providers.length > 0 || hasLiveSession;
+    if (providers.length > 0) cross.title = "本轮仅开放已连接模型的第一轮回答";
+  }
+
+  for (const providerId of ["chatgpt", "gemini"] as const) {
+    const checkbox = document.querySelector<HTMLInputElement>(`input[value="${providerId}"]`);
+    const label = document.querySelector(`#${providerId}-label`);
+    const isConnected = connectedTabs[providerId] !== undefined;
+    if (checkbox) {
+      checkbox.disabled = providers.length > 0 && !isConnected;
+      if (!isConnected && providers.length > 0) checkbox.checked = false;
+    }
+    if (label) {
+      const state = isConnected ? "已临时连接" : disconnectedProviders.has(providerId) ? "连接已断开" : "未接入";
+      label.textContent = ` ${providerName(providerId)}（${state}）`;
+    }
+  }
+  const grok = document.querySelector<HTMLInputElement>('input[value="grok"]');
+  if (grok) {
+    grok.disabled = providers.length > 0;
+    if (providers.length > 0) grok.checked = false;
+  }
+}
+
+async function attachConnection(request: ConnectionRequest): Promise<ConnectionRejectionCode | null> {
+  if (typeof chrome.runtime.getContexts !== "function") return "CONTEXT_LOOKUP_FAILED";
+  const discussionTab = await chrome.tabs.getCurrent();
+  if (!discussionTab?.id) return "DISCUSSION_TAB_MISSING";
+  if (discussionTab.id !== request.targetDiscussionTabId) return "TARGET_TAB_MISMATCH";
+  const discussionUrl = chrome.runtime.getURL("discussion.html");
+  let contexts: chrome.runtime.ExtensionContext[];
+  try {
+    contexts = await chrome.runtime.getContexts({
+      contextTypes: ["TAB"],
+      documentOrigins: [new URL(discussionUrl).origin],
+    });
+  } catch {
+    return "CONTEXT_LOOKUP_FAILED";
+  }
+  const destination = findDiscussionDestination(
+    contexts,
+    discussionUrl,
+    discussionTab.incognito ?? false,
+  );
+  let providerTab: chrome.tabs.Tab;
+  try {
+    providerTab = await chrome.tabs.get(request.providerTabId);
+  } catch {
+    return "PROVIDER_TAB_LOOKUP_FAILED";
+  }
+  const code = connectionRejectionCode(request, discussionTab, destination, providerTab, connectedTabs);
+  if (code) return code;
+  connectedTabs[request.providerId] = request.providerTabId;
+  disconnectedProviders.delete(request.providerId);
+  const checkbox = document.querySelector<HTMLInputElement>(`input[value="${request.providerId}"]`);
+  if (checkbox) checkbox.checked = true;
+  showConnectionState();
+  return null;
+}
+
+async function validateConnectedTabs(): Promise<void> {
+  try {
+    const discussionTab = await chrome.tabs.getCurrent();
+    if (!discussionTab) {
+      for (const tabId of Object.values(connectedTabs)) if (tabId !== undefined) disconnectTab(tabId);
+      return;
+    }
+    for (const providerId of connectedProviderIds()) {
+      const tabId = connectedTabs[providerId];
+      if (tabId === undefined) continue;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status !== "complete" || tab.incognito !== (discussionTab.incognito ?? false)) disconnectTab(tabId);
+      } catch {
+        disconnectTab(tabId);
+      }
+    }
+  } catch {
+    for (const tabId of Object.values(connectedTabs)) if (tabId !== undefined) disconnectTab(tabId);
+  } finally {
+    connectionsReady = true;
+    showConnectionState();
+  }
+}
+
+function disconnectTab(tabId: number): void {
+  const providerId = providerForTabId(connectedTabs, tabId);
+  if (!providerId) return;
+  delete connectedTabs[providerId];
+  disconnectedProviders.add(providerId);
+  const checkbox = document.querySelector<HTMLInputElement>(`input[value="${providerId}"]`);
+  if (checkbox) checkbox.checked = false;
+  if (urlConnectedTabs[providerId] === tabId) {
+    delete urlConnectedTabs[providerId];
+    clearConnectionUrl(providerId);
+  }
+  showConnectionState();
+}
+
+function clearConnectionUrl(providerId: ConnectedProviderId): void {
+  const params = new URLSearchParams(window.location.search);
+  params.delete(`${providerId}Tab`);
+  const search = params.toString();
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${search ? `?${search}` : ""}`,
+  );
+}
+
+function providerName(providerId: ConnectedProviderId): string {
+  return providerId === "gemini" ? "Gemini" : "ChatGPT";
 }
 
 function render(): void {
