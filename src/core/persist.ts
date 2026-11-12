@@ -300,7 +300,7 @@ function readMessage(
   );
   const adapterMode = expectEnum(
     raw.adapterMode,
-    ["mock", "unimplemented", "none"] as const,
+    ["mock", "unimplemented", "live", "none"] as const,
     lineNumber,
     "adapterMode",
     errors,
@@ -362,6 +362,11 @@ function consistencyError(message: SessionMessage): string | null {
   }
   if (message.sourceKind === "provider" && message.adapterMode === "mock") {
     return "provider 记录不能标成 mock";
+  }
+  if (message.adapterMode === "live" && message.status === "complete") {
+    if (message.sourceKind !== "provider" || message.role !== "assistant" || !message.body.trim()) {
+      return "live 完成记录字段不一致";
+    }
   }
   if (message.sourceKind === "system" && message.role === "assistant" && message.status === "complete") {
     return "system 记录不能伪装成完成的回答";

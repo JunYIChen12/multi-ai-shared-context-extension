@@ -26,15 +26,16 @@ const FORBIDDEN_PERMISSIONS = new Set([
   "nativeMessaging",
   "proxy",
   "privacy",
-  "scripting",
   "downloads",
   "identity",
 ]);
 
+const REQUIRED_PERMISSIONS = new Set(["activeTab", "scripting"]);
+
 /**
- * 本阶段扩展壳的权限上限。
+ * ChatGPT 单标签页阶段的权限上限。
  * 返回错误列表；空数组表示可以通过。
- * 不读取 Cookie、不声明站点权限、不注入内容脚本。
+ * 只允许用户手势触发的临时标签页访问，不声明站点权限。
  */
 export function extensionManifestErrors(manifest: unknown): string[] {
   const errors: string[] = [];
@@ -51,7 +52,7 @@ export function extensionManifestErrors(manifest: unknown): string[] {
   if (value.action?.default_popup !== "popup.html") {
     errors.push("action.default_popup 必须是 popup.html");
   }
-  errors.push(...permissionErrors("permissions", value.permissions));
+  errors.push(...requiredPermissionErrors(value.permissions));
   errors.push(...permissionErrors("optional_permissions", value.optional_permissions));
   errors.push(...hostErrors("host_permissions", value.host_permissions));
   errors.push(...hostErrors("optional_host_permissions", value.optional_host_permissions));
@@ -102,6 +103,24 @@ function permissionErrors(field: string, permissions: string[] | undefined): str
       errors.push(`${field} 含有本阶段禁止的权限: ${permission}`);
     } else {
       errors.push(`${field} 本阶段必须为空，发现: ${permission}`);
+    }
+  }
+  return errors;
+}
+
+function requiredPermissionErrors(permissions: string[] | undefined): string[] {
+  if (!Array.isArray(permissions)) {
+    return ["permissions 必须是数组"];
+  }
+  const errors: string[] = [];
+  for (const required of REQUIRED_PERMISSIONS) {
+    if (!permissions.includes(required)) {
+      errors.push(`permissions 缺少批准的权限: ${required}`);
+    }
+  }
+  for (const permission of permissions) {
+    if (!REQUIRED_PERMISSIONS.has(permission)) {
+      errors.push(`permissions 含有未批准的权限: ${permission}`);
     }
   }
   return errors;

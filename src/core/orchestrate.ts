@@ -18,6 +18,7 @@ export interface OrchestratorOptions {
   clock: Clock;
   adapters: ProviderAdapter[];
   timeoutMs?: number;
+  timeoutMsByProvider?: Partial<Record<ProviderId, number>>;
   maxRounds?: number;
 }
 
@@ -211,25 +212,64 @@ export async function callAdapter(
     userPrompt,
     injection,
   };
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMsByProvider?.[providerId] ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = adapter.respond(request, { signal: controller.signal });
+  void pending.catch(() => undefined);
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("timeout"));
+    }, timeoutMs);
+  });
   try {
-    const response = await withTimeout(adapter.respond(request), timeoutMs);
+    const response = await Promise.race([pending, timeout]);
+    if (controller.signal.aborted) {
+      return timeoutMessage(base, providerId, timeoutMs, adapter.mode);
+    }
     return messageFromResponse(base, response);
   } catch (error) {
-    const timedOut = error instanceof Error && error.message === "timeout";
+    const timedOut = controller.signal.aborted || (error instanceof Error && error.message === "timeout");
+    if (timedOut) {
+      return timeoutMessage(base, providerId, timeoutMs, adapter.mode);
+    }
     return {
       ...base,
       role: "system",
       body: "",
-      status: timedOut ? "timeout" : "failed",
+      status: "failed",
       sourceKind: "system",
       adapterMode: adapter.mode,
-      errorCode: timedOut ? "timeout" : "adapter_error",
-      errorMessage: timedOut
-        ? `${providerId} 超过 ${timeoutMs}ms 仍未完成`
-        : shortError(error),
+      errorCode: "adapter_error",
+      errorMessage: shortError(error),
     };
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
+}
+
+function timeoutMessage(
+  base: Omit<
+    SessionMessage,
+    "role" | "body" | "status" | "sourceKind" | "adapterMode" | "errorCode" | "errorMessage"
+  >,
+  providerId: ProviderId,
+  timeoutMs: number,
+  adapterMode: SessionMessage["adapterMode"],
+): SessionMessage {
+  return {
+    ...base,
+    role: "system",
+    body: "",
+    status: "timeout",
+    sourceKind: "system",
+    adapterMode,
+    errorCode: "timeout",
+    errorMessage: `${providerId} 超过 ${timeoutMs}ms 仍未完成`,
+  };
 }
 
 function messageFromResponse(
@@ -258,7 +298,12 @@ function messageFromResponse(
     role: failed ? "system" : "assistant",
     body: failed ? "" : response.body,
     status: response.status,
-    sourceKind: response.mode === "mock" && response.status === "complete" ? "mock" : "system",
+    sourceKind:
+      response.status !== "complete"
+        ? "system"
+        : response.mode === "mock"
+          ? "mock"
+          : "provider",
     adapterMode: response.mode,
     errorCode: response.error?.code ?? null,
     errorMessage: response.error?.message ?? null,
@@ -271,6 +316,9 @@ export function contractViolation(response: ProviderResponse): string | null {
   }
   if (response.mode === "mock" && response.status === "complete" && !response.body.startsWith(MOCK_PREFIX)) {
     return "MOCK 完成回复必须以 [MOCK] 开头";
+  }
+  if (response.mode === "live" && response.status === "complete" && !response.body.trim()) {
+    return "live 完成回复必须有正文";
   }
   if (response.body.length > MAX_MESSAGE_BODY_CHARS) {
     return "适配器回复超过长度上限";
@@ -298,25 +346,6 @@ async function reviewTarget(
     ...options,
     adapters: [adapter],
   });
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const guarded = promise.then(
-    (value) => value,
-    (error: unknown) => Promise.reject(error),
-  );
-  void guarded.catch(() => undefined);
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-  });
-  try {
-    return await Promise.race([guarded, timeout]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
 }
 
 function userMessage(sessionId: string, body: string, clock: Clock): SessionMessage {

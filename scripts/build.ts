@@ -14,6 +14,8 @@ await esbuild.build({
   entryPoints: {
     popup: path.join(root, "src/extension/popup.ts"),
     discussion: path.join(root, "src/extension/discussion.ts"),
+    "chatgpt-content": path.join(root, "src/extension/chatgpt-content.ts"),
+    "gemini-content": path.join(root, "src/extension/gemini-content.ts"),
   },
   bundle: true,
   outdir,
@@ -26,7 +28,16 @@ await esbuild.build({
 
 await cp(path.join(root, "extension"), outdir, { recursive: true });
 
-const required = ["manifest.json", "popup.html", "popup.js", "discussion.html", "discussion.js", "discussion.css"];
+const required = [
+  "manifest.json",
+  "popup.html",
+  "popup.js",
+  "discussion.html",
+  "discussion.js",
+  "discussion.css",
+  "chatgpt-content.js",
+  "gemini-content.js",
+];
 for (const name of required) {
   await readFile(path.join(outdir, name));
 }
@@ -48,6 +59,8 @@ if (!discussionHtml.includes('src="discussion.js"') || !discussionHtml.includes(
 
 syntaxCheck(path.join(outdir, "popup.js"));
 syntaxCheck(path.join(outdir, "discussion.js"));
+syntaxCheck(path.join(outdir, "chatgpt-content.js"));
+syntaxCheck(path.join(outdir, "gemini-content.js"));
 
 console.log(`built ${path.relative(root, outdir)}`);
 

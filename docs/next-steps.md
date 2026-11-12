@@ -4,11 +4,19 @@
 
 ## 已经停在这里
 
-工程基础可以类型检查、单元测试和构建。产品形态已确定为 Chrome 扩展，但当前目录仍只是工程壳。三家网页都未接入。MOCK 只是演示数据。
+现行状态以 GitHub Issue 为准。工程基础可以类型检查、单元测试和构建，但仓库尚未发布，也还不是可用产品。MOCK 只是演示数据。
+
+- ChatGPT 单标签页连接器已在候选分支。Issue #2 尚未整体验收；正文提取修复在开放的 [PR #8](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/8)，尚未合入候选。
+- Gemini 单标签页实现在开放的 [PR #11](https://github.com/JunYIChen12/multi-ai-shared-context-extension/pull/11)，尚未合入候选。Issue #10 的技术验收未通过。
+- Grok 尚未实现。
 
 ## 1. 单家已登录网页链路探针
 
 这是合并初始化之后的第一件事。只做一家，建议先选用户当前最好登录、页面结构相对稳定的一家。不要三家一起做。
+
+### 当前关口
+
+第 1 步的 ChatGPT 单标签页候选已写出，但 Issue #2 尚未整体验收。后续细节（含 PR #8 是否合入）以对应 Issue 为准。Gemini 不在本步范围内，跟踪在 Issue #10 与 PR #11。Grok 尚未实现。
 
 前置依赖：
 

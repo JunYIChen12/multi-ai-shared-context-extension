@@ -7,18 +7,18 @@
   </head>
   <body>
     <header class="banner">
-      <strong>Chrome 扩展形态已确定，当前仍是未接入真实网页的工程壳。</strong>
-      <span>未接入 ChatGPT、Grok、Gemini 网页。默认结果不是模型回答。MOCK 只用于演示数据契约。</span>
+      <strong id="connection-status">未连接</strong>
+      <span id="connection-detail">请从已登录的 ChatGPT 或 Gemini 标签页点击扩展连接。Grok 未接入。</span>
     </header>
     <main>
       <form id="ask">
         <label for="prompt">问题</label>
-        <textarea id="prompt" name="prompt" rows="4" required placeholder="输入一次问题。本页不会把它发给任何网站。"></textarea>
+        <textarea id="prompt" name="prompt" rows="4" required placeholder="输入一次问题。连接后发送给已连接的 ChatGPT 和 Gemini 标签页。"></textarea>
         <fieldset>
           <legend>参与的来源</legend>
-          <label><input type="checkbox" name="provider" value="chatgpt" checked /> ChatGPT（未接入）</label>
+          <label><input type="checkbox" name="provider" value="chatgpt" checked /><span id="chatgpt-label"> ChatGPT（未接入）</span></label>
           <label><input type="checkbox" name="provider" value="grok" checked /> Grok（未接入）</label>
-          <label><input type="checkbox" name="provider" value="gemini" checked /> Gemini（未接入）</label>
+          <label><input type="checkbox" name="provider" value="gemini" checked /><span id="gemini-label"> Gemini（未接入）</span></label>
         </fieldset>
         <div class="actions">
           <button id="record-gap" type="submit">记录未接入尝试</button>

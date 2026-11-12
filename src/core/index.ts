@@ -16,6 +16,7 @@ export type {
   MessageStatus,
   Provenance,
   ProviderAdapter,
+  ProviderCallContext,
   ProviderId,
   ProviderRequest,
   ProviderResponse,

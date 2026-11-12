@@ -26,6 +26,146 @@ async function started(prompt: string, opts: OrchestratorOptions): Promise<Sessi
 }
 
 describe("独立回答", () => {
+  it("live 完成回复保存为可追踪的 provider 观点", async () => {
+    const live: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "complete", body: "CHATGPT_LIVE_OK" };
+      },
+    };
+    const opts = options([live]);
+    const ran = await runIndependentRound(await started("真实链路", opts), opts);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) {
+      return;
+    }
+    const reply = ran.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.ok(reply);
+    assert.equal(reply.status, "complete");
+    assert.equal(reply.sourceKind, "provider");
+    assert.equal(reply.adapterMode, "live");
+    assert.equal(reply.body, "CHATGPT_LIVE_OK");
+    assert.equal(isInjectableOpinion(reply), true);
+    assert.equal(outcomeHeadline(reply), "页面结束");
+    assert.match(contractViolation({ mode: "live", status: "complete", body: "" }) ?? "", /正文/);
+  });
+
+  it("手停和未知不会留下可注入正文", async () => {
+    const stopped: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "cancelled", body: "残文", error: { code: "stopped", message: "已手停" } };
+      },
+    };
+    const opts = options([stopped]);
+    const ran = await runIndependentRound(await started("手停", opts), opts);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) return;
+    const reply = ran.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(reply?.status, "cancelled");
+    assert.equal(reply?.body, "");
+    assert.equal(reply?.sourceKind, "system");
+    assert.equal(reply ? outcomeHeadline(reply) : "", "已手停");
+    assert.equal(reply ? isInjectableOpinion(reply) : true, false);
+
+    const unknownAdapter: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond() {
+        return { mode: "live", status: "failed", body: "未知正文", error: { code: "unknown", message: "证据不足" } };
+      },
+    };
+    const unknownRun = await runIndependentRound(await started("未知", options([unknownAdapter])), options([unknownAdapter]));
+    assert.equal(unknownRun.ok, true);
+    if (!unknownRun.ok) return;
+    const unknownReply = unknownRun.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(unknownReply?.status, "failed");
+    assert.equal(unknownReply?.body, "");
+    assert.equal(unknownReply?.sourceKind, "system");
+    assert.equal(unknownReply?.errorCode, "unknown");
+    assert.equal(unknownReply ? outcomeHeadline(unknownReply) : "", "未知");
+    assert.equal(unknownReply ? isInjectableOpinion(unknownReply) : true, false);
+  });
+
+  it("外层超时后不接收晚到的完成正文，下一轮不被污染", async () => {
+    let round = 0;
+    const live: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond(_request, context) {
+        round += 1;
+        if (round === 1) {
+          return await new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ mode: "live", status: "complete", body: "LATE" }), 200);
+            context?.signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              resolve({ mode: "live", status: "complete", body: "LATE" });
+            });
+          });
+        }
+        return { mode: "live", status: "complete", body: "SECOND" };
+      },
+    };
+    const slow = options([live], 20);
+    const first = await runIndependentRound(await started("超时", slow), slow);
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    const late = first.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(late?.status, "timeout");
+    assert.equal(late?.body, "");
+    assert.equal(late ? isInjectableOpinion(late) : true, false);
+
+    const second = await runIndependentRound(await started("下一轮", options([live], 1000)), options([live], 1000));
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+    const reply = second.session.messages.find((message) => message.providerId === "chatgpt");
+    assert.equal(reply?.body, "SECOND");
+    assert.equal(reply?.status, "complete");
+  });
+
+  it("每家独立超时，超时的一家留空，另一家可并行完成", async () => {
+    let chatgptCalls = 0;
+    let geminiCalls = 0;
+    const chatgpt: ProviderAdapter = {
+      id: "chatgpt",
+      mode: "live",
+      async respond(_request, context) {
+        chatgptCalls += 1;
+        return await new Promise((resolve) => {
+          context?.signal?.addEventListener("abort", () => {
+            resolve({ mode: "live", status: "cancelled", body: "迟到正文" });
+          }, { once: true });
+        });
+      },
+    };
+    const gemini: ProviderAdapter = {
+      id: "gemini",
+      mode: "live",
+      async respond() {
+        geminiCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return { mode: "live", status: "complete", body: "GEMINI_ON_TIME" };
+      },
+    };
+    const opts: OrchestratorOptions = {
+      ...options([chatgpt, gemini], 80),
+      timeoutMsByProvider: { chatgpt: 5, gemini: 80 },
+    };
+    const ran = await runIndependentRound(await started("各自计时", opts), opts);
+    assert.equal(ran.ok, true);
+    if (!ran.ok) return;
+    const byId = new Map(ran.session.messages.map((message) => [message.providerId, message]));
+    assert.equal(byId.get("chatgpt")?.status, "timeout");
+    assert.equal(byId.get("chatgpt")?.body, "");
+    assert.match(byId.get("chatgpt")?.errorMessage ?? "", /超过 5ms/);
+    assert.equal(byId.get("gemini")?.status, "complete");
+    assert.equal(byId.get("gemini")?.body, "GEMINI_ON_TIME");
+    assert.equal(chatgptCalls, 1);
+    assert.equal(geminiCalls, 1);
+  });
+
   it("默认适配器全部未接入，且不会变成可注入观点", async () => {
     const opts = options(defaultAdapters());
     const session = await started("同一个问题", opts);

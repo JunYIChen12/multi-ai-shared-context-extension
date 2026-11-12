@@ -41,6 +41,24 @@ export function outcomeHeadline(message: SessionMessage): string {
   if (message.trust === "local_unverified_import" && message.sourceKind === "provider") {
     return "未验证导入";
   }
+  if (message.errorCode === "stopped") {
+    return "已手停";
+  }
+  if (message.errorCode === "unknown") {
+    return "未知";
+  }
+  if (message.errorCode === "navigation") {
+    return "会话已隔离";
+  }
+  if (message.errorCode === "page_error") {
+    return "页面错误";
+  }
+  if (message.errorCode === "in_flight") {
+    return "已有进行中的采集";
+  }
+  if (message.adapterMode === "live" && message.status === "complete" && message.sourceKind === "provider") {
+    return "页面结束";
+  }
   return statusText(message.status);
 }
 
