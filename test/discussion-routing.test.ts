@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   canAttachProvider,
   connectionAckMatches,
+  connectionAckRejectionCode,
+  connectionRejectionCode,
   createConnectionRequest,
   findDiscussionDestination,
   isConnectionRequest,
@@ -50,6 +52,31 @@ describe("讨论页连接路由", () => {
     assert.equal(isConnectionRequest({ ...request, prompt: "do not route page content" }), false);
     assert.equal(connectionAckMatches({ ok: true, targetDiscussionTabId: 17 }, 17), true);
     assert.equal(connectionAckMatches({ ok: true, targetDiscussionTabId: 18 }, 17), false);
+  });
+
+  it("连接拒绝只暴露固定原因代码，不把任意响应数据当作原因", () => {
+    assert.equal(connectionAckRejectionCode({ ok: false, code: "PROVIDER_TAB_NOT_READY", targetDiscussionTabId: 17 }, 17), "PROVIDER_TAB_NOT_READY");
+    assert.equal(connectionAckRejectionCode({ ok: false, code: "private chat text", targetDiscussionTabId: 17 }, 17), "ACK_INVALID");
+    assert.equal(connectionAckRejectionCode({ ok: false, code: "PROVIDER_TAB_NOT_READY", targetDiscussionTabId: 18 }, 17), "ACK_INVALID");
+    assert.equal(connectionAckRejectionCode(undefined, 17), "ACK_INVALID");
+  });
+
+  it("两种连接顺序都能接入唯一讨论页；拒绝时返回具体且不覆盖旧连接", () => {
+    const chatgptFirst = { chatgpt: 42 };
+    const geminiFirst = { gemini: 73 };
+    const request = createConnectionRequest(17, "gemini", 73);
+    const unique = { kind: "unique" as const, tabId: 17 };
+    const discussionTab = { id: 17, incognito: false };
+    const readyTab = { status: "complete", incognito: false };
+    assert.equal(connectionRejectionCode(request, discussionTab, unique, readyTab, chatgptFirst), null);
+    assert.equal(connectionRejectionCode(createConnectionRequest(17, "chatgpt", 42), discussionTab, unique, readyTab, geminiFirst), null);
+    assert.equal(connectionRejectionCode(request, discussionTab, unique, { ...readyTab, status: "loading" }, chatgptFirst), "PROVIDER_TAB_NOT_READY");
+    assert.deepEqual(chatgptFirst, { chatgpt: 42 });
+    assert.equal(connectionRejectionCode(request, { id: 18, incognito: false }, unique, readyTab, chatgptFirst), "TARGET_TAB_MISMATCH");
+    assert.equal(connectionRejectionCode(request, discussionTab, { kind: "ambiguous" }, readyTab, chatgptFirst), "TARGET_NOT_UNIQUE");
+    assert.equal(connectionRejectionCode(request, discussionTab, unique, { ...readyTab, incognito: true }, chatgptFirst), "INCOGNITO_MISMATCH");
+    assert.equal(connectionRejectionCode(request, discussionTab, unique, readyTab, { chatgpt: 42, gemini: 74 }), "PROVIDER_ALREADY_CONNECTED");
+    assert.equal(connectionRejectionCode(request, discussionTab, unique, readyTab, { chatgpt: 73 }), "TAB_ALREADY_CONNECTED");
   });
 
   it("连接地址只接受一个有效 provider 标签页，拒绝重复、非法或双 provider 参数", () => {

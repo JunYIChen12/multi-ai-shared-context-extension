@@ -21,6 +21,14 @@ export interface ConnectionRequest {
 
 export type ConnectedTabIds = Partial<Record<ConnectedProviderId, number>>;
 
+export const CONNECTION_REJECTION_CODES = [
+  "INVALID_REQUEST", "INVALID_SENDER", "DISCUSSION_TAB_MISSING", "TARGET_TAB_MISMATCH",
+  "TARGET_NOT_UNIQUE", "CONTEXT_LOOKUP_FAILED", "PROVIDER_TAB_LOOKUP_FAILED",
+  "PROVIDER_TAB_NOT_READY", "INCOGNITO_MISMATCH", "PROVIDER_ALREADY_CONNECTED",
+  "TAB_ALREADY_CONNECTED", "ACK_INVALID",
+] as const;
+export type ConnectionRejectionCode = typeof CONNECTION_REJECTION_CODES[number];
+
 export function findDiscussionDestination(
   contexts: readonly DiscussionContext[],
   discussionUrl: string,
@@ -79,6 +87,31 @@ export function connectionAckMatches(value: unknown, targetDiscussionTabId: numb
     (value as Record<string, unknown>).ok === true &&
     (value as Record<string, unknown>).targetDiscussionTabId === targetDiscussionTabId,
   );
+}
+
+export function connectionAckRejectionCode(value: unknown, targetDiscussionTabId: number): ConnectionRejectionCode {
+  if (!value || typeof value !== "object") return "ACK_INVALID";
+  const response = value as Record<string, unknown>;
+  if (response.ok !== false || response.targetDiscussionTabId !== targetDiscussionTabId) return "ACK_INVALID";
+  return CONNECTION_REJECTION_CODES.find((code) => code === response.code) ?? "ACK_INVALID";
+}
+
+export function connectionRejectionCode(
+  request: ConnectionRequest,
+  discussionTab: { id?: number; incognito?: boolean } | null,
+  destination: DiscussionDestination,
+  providerTab: { status?: string; incognito?: boolean } | null,
+  connected: ConnectedTabIds,
+): ConnectionRejectionCode | null {
+  if (!discussionTab?.id) return "DISCUSSION_TAB_MISSING";
+  if (discussionTab.id !== request.targetDiscussionTabId) return "TARGET_TAB_MISMATCH";
+  if (destination.kind !== "unique" || destination.tabId !== discussionTab.id) return "TARGET_NOT_UNIQUE";
+  if (!providerTab) return "PROVIDER_TAB_LOOKUP_FAILED";
+  if (providerTab.status !== "complete") return "PROVIDER_TAB_NOT_READY";
+  if (providerTab.incognito !== (discussionTab.incognito ?? false)) return "INCOGNITO_MISMATCH";
+  if (connected[request.providerId] !== undefined) return "PROVIDER_ALREADY_CONNECTED";
+  if (Object.values(connected).includes(request.providerTabId)) return "TAB_ALREADY_CONNECTED";
+  return null;
 }
 
 export function readConnectedTabIds(search: string): ConnectedTabIds {

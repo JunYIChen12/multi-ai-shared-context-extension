@@ -9,12 +9,13 @@ import { createChatGptAdapter, createChatGptTabTransport } from "./chatgpt-conne
 import { createGeminiAdapter, createGeminiTabTransport } from "./gemini-connector.js";
 import { CHATGPT_OUTER_TIMEOUT_MS, providerIdsForMode, timeoutMsForRound } from "./provider-selection.js";
 import {
-  canAttachProvider,
+  connectionRejectionCode,
   findDiscussionDestination,
   isConnectionRequest,
   providerForTabId,
   readConnectedTabIds,
   type ConnectionRequest,
+  type ConnectionRejectionCode,
   type ConnectedProviderId,
   type ConnectedTabIds,
 } from "./discussion-routing.js";
@@ -62,14 +63,18 @@ document.querySelector("#import-jsonl")?.addEventListener("change", (event) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (
-    !isConnectionRequest(message) ||
-    sender.id !== chrome.runtime.id ||
-    sender.url !== chrome.runtime.getURL("popup.html")
-  ) return false;
+  if (!message || typeof message !== "object" || message.channel !== "multi-ai-discussion-connect-v1") return false;
+  if (!isConnectionRequest(message)) {
+    sendResponse({ ok: false, code: "INVALID_REQUEST" });
+    return false;
+  }
+  if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("popup.html")) {
+    sendResponse({ ok: false, code: "INVALID_SENDER", targetDiscussionTabId: message.targetDiscussionTabId });
+    return false;
+  }
   void attachConnection(message).then(
-    (ok) => sendResponse({ ok, targetDiscussionTabId: message.targetDiscussionTabId }),
-    () => sendResponse({ ok: false, targetDiscussionTabId: message.targetDiscussionTabId }),
+    (code) => sendResponse({ ok: code === null, code, targetDiscussionTabId: message.targetDiscussionTabId }),
+    () => sendResponse({ ok: false, code: "ACK_INVALID", targetDiscussionTabId: message.targetDiscussionTabId }),
   );
   return true;
 });
@@ -259,30 +264,40 @@ function showConnectionState(): void {
   }
 }
 
-async function attachConnection(request: ConnectionRequest): Promise<boolean> {
-  if (typeof chrome.runtime.getContexts !== "function") return false;
+async function attachConnection(request: ConnectionRequest): Promise<ConnectionRejectionCode | null> {
+  if (typeof chrome.runtime.getContexts !== "function") return "CONTEXT_LOOKUP_FAILED";
   const discussionTab = await chrome.tabs.getCurrent();
-  if (discussionTab?.id !== request.targetDiscussionTabId) return false;
+  if (!discussionTab?.id) return "DISCUSSION_TAB_MISSING";
+  if (discussionTab.id !== request.targetDiscussionTabId) return "TARGET_TAB_MISMATCH";
   const discussionUrl = chrome.runtime.getURL("discussion.html");
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ["TAB"],
-    documentOrigins: [new URL(discussionUrl).origin],
-  });
+  let contexts: chrome.runtime.ExtensionContext[];
+  try {
+    contexts = await chrome.runtime.getContexts({
+      contextTypes: ["TAB"],
+      documentOrigins: [new URL(discussionUrl).origin],
+    });
+  } catch {
+    return "CONTEXT_LOOKUP_FAILED";
+  }
   const destination = findDiscussionDestination(
     contexts,
     discussionUrl,
     discussionTab.incognito ?? false,
   );
-  if (destination.kind !== "unique" || destination.tabId !== discussionTab.id) return false;
-  const providerTab = await chrome.tabs.get(request.providerTabId);
-  if (providerTab.status !== "complete" || providerTab.incognito !== (discussionTab.incognito ?? false)) return false;
-  if (!canAttachProvider(connectedTabs, request.providerId, request.providerTabId)) return false;
+  let providerTab: chrome.tabs.Tab;
+  try {
+    providerTab = await chrome.tabs.get(request.providerTabId);
+  } catch {
+    return "PROVIDER_TAB_LOOKUP_FAILED";
+  }
+  const code = connectionRejectionCode(request, discussionTab, destination, providerTab, connectedTabs);
+  if (code) return code;
   connectedTabs[request.providerId] = request.providerTabId;
   disconnectedProviders.delete(request.providerId);
   const checkbox = document.querySelector<HTMLInputElement>(`input[value="${request.providerId}"]`);
   if (checkbox) checkbox.checked = true;
   showConnectionState();
-  return true;
+  return null;
 }
 
 async function validateConnectedTabs(): Promise<void> {

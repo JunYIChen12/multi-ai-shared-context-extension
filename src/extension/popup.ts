@@ -4,6 +4,7 @@ import { connectActiveChatGptTab } from "./chatgpt-connector.js";
 import { connectActiveGeminiTab } from "./gemini-connector.js";
 import {
   connectionAckMatches,
+  connectionAckRejectionCode,
   createConnectionRequest,
   findDiscussionDestination,
   sameDiscussionDestination,
@@ -68,7 +69,8 @@ openButton?.addEventListener("click", async () => {
             createConnectionRequest(latest.tabId, provider, tab.id),
           );
           if (!connectionAckMatches(response, latest.tabId)) {
-            routeError = "目标讨论页未接受连接；现有连接没有改变。";
+            const code = connectionAckRejectionCode(response, latest.tabId);
+            routeError = `目标讨论页未接受连接；现有连接没有改变。（原因代码：${code}）`;
             throw new Error(routeError);
           }
         },
