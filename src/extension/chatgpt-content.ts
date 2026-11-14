@@ -7,12 +7,13 @@ const scope = globalThis as typeof globalThis & { __multiAiChatGptListenerInstal
 const sendLedger = createSendLedger();
 
 const gate = createCollectionGate(
-  (prompt, signal) => runChatGptTurn(
+  (prompt, signal, roundtablePrompt) => runChatGptTurn(
     createDomEvidencePort(() => document, () => location.href),
     prompt,
     DEFAULT_CHATGPT_TIMING,
     signal,
     sendLedger,
+    roundtablePrompt,
   ),
   { ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送" },
   { ok: false, code: "in_flight", message: "这个标签页已有进行中的采集，不会再次发送" },
@@ -28,7 +29,7 @@ if (!scope.__multiAiChatGptListenerInstalled) {
       gate.cancel(message.requestId);
       return;
     }
-    void gate.ask(message.requestId, message.prompt).then(sendResponse, () => sendResponse(failed("ChatGPT 页面执行失败")));
+    void gate.ask(message.requestId, message.prompt, message.roundtablePrompt === true).then(sendResponse, () => sendResponse(failed("ChatGPT 页面执行失败")));
     return true;
   });
 }
@@ -47,7 +48,9 @@ function isInbound(value: unknown): value is ChatGptAskRequest | ChatGptCancelRe
   if (request.type === "cancel") {
     return true;
   }
-  return request.type === "ask" && typeof request.prompt === "string";
+  return request.type === "ask"
+    && typeof request.prompt === "string"
+    && (request.roundtablePrompt === undefined || typeof request.roundtablePrompt === "boolean");
 }
 
 function failed(message: string): ChatGptAskResult {

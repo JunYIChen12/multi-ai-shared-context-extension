@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { formatRoundtablePrompt } from "../src/core/context.js";
 import { MAX_MESSAGE_BODY_CHARS } from "../src/core/types.js";
 import type { ChatGptEvidencePort, PageEvidence, StructuralTurn } from "../src/extension/chatgpt-evidence.js";
 import { parseSessionUrl, relateSession } from "../src/extension/chatgpt-evidence.js";
@@ -58,6 +59,7 @@ function scripted(
   page: ChatGptEvidencePort;
   submits: () => number;
   writes: () => number;
+  written: () => string;
   requested: string[][];
   disarmed: () => number;
   timing: ChatGptTurnTiming;
@@ -67,6 +69,7 @@ function scripted(
   let disarmCount = 0;
   let submitted = false;
   let draft = "";
+  let lastWritten = "";
   let fireStop = () => undefined as void;
   const requested: string[][] = [];
   let index = 0;
@@ -80,6 +83,7 @@ function scripted(
     writePrompt(prompt: string) {
       writeCount += 1;
       draft = prompt;
+      lastWritten = prompt;
       return hooks?.writes ?? true;
     },
     readPrompt() {
@@ -101,6 +105,7 @@ function scripted(
     page,
     submits: () => submitCount,
     writes: () => writeCount,
+    written: () => lastWritten,
     requested,
     disarmed: () => disarmCount,
     timing: {
@@ -140,33 +145,60 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     if (!result.ok) assert.equal(result.code, "prompt_changed");
   });
 
-  it("只容许首轮标题后的单个换行在 ChatGPT 输入框中变成一个空格", async () => {
-    const title = "【用户 · 第 1 轮新发言】";
-    const expected = `${title}\n正文第一行\n正文第二行`;
-    const normalized = `${title} 正文第一行\n正文第二行`;
-    const accepted = scripted([evidence({}), evidence({})], {
+  it("只对圆桌提示容许每个换行在同一位置变成一个空格", async () => {
+    const meetingContext = [
+      { messageId: "g1", speakerId: "gemini", round: 1, phase: "roundtable", body: "Gemini 原话" },
+      { messageId: "c1", speakerId: "chatgpt", round: 1, phase: "roundtable", body: "ChatGPT 原话" },
+      { messageId: "u1", speakerId: "user", round: 1, phase: "roundtable", body: "用户插话" },
+    ] as const;
+    const multilineUserPrompt = "\n用户第二行\n用户第三行\n用户第四行";
+    const base = formatRoundtablePrompt(multilineUserPrompt, 2, meetingContext);
+    const expected = formatRoundtablePrompt(`${"填".repeat(503 - base.length)}${multilineUserPrompt}`, 2, meetingContext);
+    const normalized = expected.replaceAll("\n", " ");
+    assert.equal(expected.length, 503);
+    assert.equal([...expected].filter((character) => character === "\n").length, 13);
+
+    const done = evidence({
+      turns: [
+        turn({ id: "u2", role: "user", order: 0 }),
+        turn({ id: "a2", role: "assistant", order: 1, text: "CHATGPT_ROUND_2_OK", endControl: readyEnd }),
+      ],
+    });
+    const accepted = scripted([evidence({}), evidence({}), done, done, done], {
       readPrompt: () => normalized,
     });
+    const result = await runChatGptTurn(accepted.page, expected, accepted.timing, undefined, undefined, true);
 
-    await runChatGptTurn(accepted.page, expected, { ...accepted.timing, polls: 0 });
+    assert.deepEqual(result, { ok: true, body: "CHATGPT_ROUND_2_OK" });
     assert.equal(accepted.submits(), 1);
+    assert.equal(accepted.written(), expected);
 
     for (const changed of [
-      `${title}  正文第一行\n正文第二行`,
-      `${title}\t正文第一行\n正文第二行`,
-      `${title} 正文第一行 正文第二行`,
-      `${title} 正文第一行\n正文第二行!`,
-      "【用户 · 第 2 轮新发言】 正文第一行\n正文第二行",
+      expected.replace("\n", "  "),
+      expected.replace("\n", "\t"),
+      expected.replace("\n", "\r"),
+      expected.replace("\n", "\u00a0"),
+      normalized.replace("Gemini", "GeminX"),
+      normalized.replace(" ", "\n"),
+      normalized.slice(1),
     ]) {
       const rejected = scripted([evidence({}), evidence({})], {
         readPrompt: () => changed,
       });
-      const result = await runChatGptTurn(rejected.page, expected, rejected.timing);
+      const blocked = await runChatGptTurn(rejected.page, expected, rejected.timing, undefined, undefined, true);
 
-      assert.equal(result.ok, false);
-      if (!result.ok) assert.equal(result.code, "prompt_changed");
+      assert.equal(blocked.ok, false);
+      if (!blocked.ok) assert.equal(blocked.code, "prompt_changed");
       assert.equal(rejected.submits(), 0);
     }
+
+    const independent = scripted([evidence({}), evidence({})], {
+      readPrompt: () => normalized,
+    });
+    const notRoundtable = await runChatGptTurn(independent.page, expected, independent.timing);
+    assert.equal(notRoundtable.ok, false);
+    if (!notRoundtable.ok) assert.equal(notRoundtable.code, "prompt_changed");
+    assert.equal(independent.submits(), 0);
   });
 
   it("Stop 或错误证据不可读时，发送前必须 fail closed", async () => {

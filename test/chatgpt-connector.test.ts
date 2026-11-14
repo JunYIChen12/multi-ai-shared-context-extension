@@ -7,6 +7,7 @@ import {
   discussionPath,
   isChatGptUrl,
   readChatGptTabId,
+  type ChatGptAskRequest,
   type ChatGptConnectionPort,
   type ChatGptTransport,
 } from "../src/extension/chatgpt-connector.js";
@@ -112,9 +113,11 @@ describe("ChatGPT 连接器协议", () => {
 
   it("圆桌请求只把未投递的署名原话和本轮用户发言放进 ChatGPT 输入", async () => {
     let sentPrompt = "";
+    let sentRoundtablePrompt: boolean | undefined;
     const response = await createChatGptAdapter({
       async send(message) {
         sentPrompt = message.prompt;
+        sentRoundtablePrompt = message.roundtablePrompt;
         return { ok: true, body: "CHATGPT_ROUND_2_OK" };
       },
     }).respond({
@@ -127,7 +130,25 @@ describe("ChatGPT 连接器协议", () => {
       ],
     });
     assert.equal(response.status, "complete");
+    assert.equal(sentRoundtablePrompt, true);
     assert.equal(sentPrompt, "【Gemini · 第 1 轮完整原话】\nGemini 完整原话\n\n【用户 · 第 2 轮新发言】\n请核对边界");
+  });
+
+  it("只把格式器生成的圆桌请求标记为圆桌提示", async () => {
+    const asks: ChatGptAskRequest[] = [];
+    const adapter = createChatGptAdapter({
+      async send(message) {
+        asks.push(message);
+        return { ok: true, body: "OK" };
+      },
+    });
+
+    await adapter.respond(request);
+    await adapter.respond({ ...request, phase: "roundtable", round: 2, userPrompt: "下一轮" });
+
+    assert.deepEqual(asks.map((ask) => ask.roundtablePrompt), [false, true]);
+    assert.equal(asks[0]?.prompt, request.userPrompt);
+    assert.equal(asks[1]?.prompt.startsWith("【用户 · 第 2 轮新发言】\n"), true);
   });
 
   it("完整圆桌内容超限时在发送到标签页前失败，不截断", async () => {

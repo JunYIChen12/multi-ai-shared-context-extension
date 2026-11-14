@@ -29,6 +29,7 @@ export interface ChatGptAskRequest {
   channel: typeof CHATGPT_CHANNEL;
   type: "ask";
   prompt: string;
+  roundtablePrompt?: boolean;
   requestId: string;
 }
 
@@ -205,6 +206,7 @@ function toAskRequest(request: ProviderRequest): ChatGptAskRequest {
     prompt: request.phase === "roundtable"
       ? formatRoundtablePrompt(request.userPrompt, request.round, request.meetingContext ?? [])
       : request.userPrompt,
+    roundtablePrompt: request.phase === "roundtable",
     requestId: crypto.randomUUID(),
   };
 }

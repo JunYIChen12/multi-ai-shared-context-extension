@@ -5,18 +5,18 @@ export type CollectionResult = { ok: true; body: string } | { ok: false; code: s
  * 重复的 requestId，或锁被占用时的另一请求，都不会再次进入发送。
  */
 export function createCollectionGate<Result extends CollectionResult>(
-  run: (prompt: string, signal: AbortSignal) => Promise<Result>,
+  run: (prompt: string, signal: AbortSignal, roundtablePrompt: boolean) => Promise<Result>,
   duplicateResult: Result,
   busyResult: Result,
 ): {
-  ask(requestId: string, prompt: string): Promise<Result>;
+  ask(requestId: string, prompt: string, roundtablePrompt?: boolean): Promise<Result>;
   cancel(requestId: string): void;
 } {
   let active: { requestId: string; abort: () => void } | null = null;
   const finished = new Set<string>();
 
   return {
-    async ask(requestId, prompt) {
+    async ask(requestId, prompt, roundtablePrompt = false) {
       if (!requestId || finished.has(requestId) || active?.requestId === requestId) {
         return duplicateResult;
       }
@@ -26,7 +26,7 @@ export function createCollectionGate<Result extends CollectionResult>(
       const controller = new AbortController();
       active = { requestId, abort: () => controller.abort() };
       try {
-        return await run(prompt, controller.signal);
+        return await run(prompt, controller.signal, roundtablePrompt);
       } finally {
         if (active?.requestId === requestId) {
           active = null;
