@@ -48,7 +48,12 @@ function evidence(options: {
 
 function scripted(
   reads: PageEvidence[],
-  hooks?: { writes?: boolean; submits?: boolean; wait?: (info: { submitted: boolean; fireStop: () => void }) => void },
+  hooks?: {
+    writes?: boolean;
+    submits?: boolean;
+    readPrompt?: (draft: string) => string | null;
+    wait?: (info: { submitted: boolean; fireStop: () => void }) => void;
+  },
 ): {
   page: ChatGptEvidencePort;
   submits: () => number;
@@ -78,7 +83,7 @@ function scripted(
       return hooks?.writes ?? true;
     },
     readPrompt() {
-      return draft;
+      return hooks?.readPrompt?.(draft) ?? draft;
     },
     submit() {
       submitCount += 1;
@@ -133,6 +138,35 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     assert.equal(result.ok, false);
     assert.equal(submits, 0);
     if (!result.ok) assert.equal(result.code, "prompt_changed");
+  });
+
+  it("只容许首轮标题后的单个换行在 ChatGPT 输入框中变成一个空格", async () => {
+    const title = "【用户 · 第 1 轮新发言】";
+    const expected = `${title}\n正文第一行\n正文第二行`;
+    const normalized = `${title} 正文第一行\n正文第二行`;
+    const accepted = scripted([evidence({}), evidence({})], {
+      readPrompt: () => normalized,
+    });
+
+    await runChatGptTurn(accepted.page, expected, { ...accepted.timing, polls: 0 });
+    assert.equal(accepted.submits(), 1);
+
+    for (const changed of [
+      `${title}  正文第一行\n正文第二行`,
+      `${title}\t正文第一行\n正文第二行`,
+      `${title} 正文第一行 正文第二行`,
+      `${title} 正文第一行\n正文第二行!`,
+      "【用户 · 第 2 轮新发言】 正文第一行\n正文第二行",
+    ]) {
+      const rejected = scripted([evidence({}), evidence({})], {
+        readPrompt: () => changed,
+      });
+      const result = await runChatGptTurn(rejected.page, expected, rejected.timing);
+
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.code, "prompt_changed");
+      assert.equal(rejected.submits(), 0);
+    }
   });
 
   it("Stop 或错误证据不可读时，发送前必须 fail closed", async () => {

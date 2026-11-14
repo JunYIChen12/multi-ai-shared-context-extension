@@ -22,6 +22,8 @@ export const DEFAULT_CHATGPT_TIMING: ChatGptTurnTiming = {
   wait: (signal) => abortableDelay(250, signal),
 };
 
+const FIRST_TURN_USER_TITLE = "【用户 · 第 1 轮新发言】";
+
 /** 同一标签页上尚未对上新用户轮次的发送次数。不是页面身份，只用来拒绝含糊归属。 */
 export interface SendLedger {
   unmatched: number;
@@ -73,7 +75,8 @@ export async function runChatGptTurn(
     if (signal.aborted) {
       return failure("cancelled", "采集已取消，不会再发送或提交结果");
     }
-    if (page.readPrompt() !== trimmed) {
+    const draft = page.readPrompt();
+    if (draft !== trimmed && !matchesFirstTurnTitleSeparatorNormalization(trimmed, draft)) {
       return failure("prompt_changed", "ChatGPT 草稿在发送前发生变化，未发送问题");
     }
     const committed = page.read({ textTurnIds: [] });
@@ -127,6 +130,15 @@ export async function runChatGptTurn(
   } finally {
     disarm();
   }
+}
+
+function matchesFirstTurnTitleSeparatorNormalization(expected: string, actual: string | null): boolean {
+  const expectedPrefix = `${FIRST_TURN_USER_TITLE}\n`;
+  const actualPrefix = `${FIRST_TURN_USER_TITLE} `;
+  return actual !== null
+    && expected.startsWith(expectedPrefix)
+    && actual.startsWith(actualPrefix)
+    && actual.slice(actualPrefix.length) === expected.slice(expectedPrefix.length);
 }
 
 export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
