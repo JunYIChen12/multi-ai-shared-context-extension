@@ -61,6 +61,7 @@ function scripted(
   let writeCount = 0;
   let disarmCount = 0;
   let submitted = false;
+  let draft = "";
   let fireStop = () => undefined as void;
   const requested: string[][] = [];
   let index = 0;
@@ -71,9 +72,13 @@ function scripted(
       index += 1;
       return item;
     },
-    writePrompt() {
+    writePrompt(prompt: string) {
       writeCount += 1;
+      draft = prompt;
       return hooks?.writes ?? true;
+    },
+    readPrompt() {
+      return draft;
     },
     submit() {
       submitCount += 1;
@@ -108,6 +113,28 @@ function scripted(
 const readyEnd = { state: "ready" as const, value: true as const };
 
 describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", () => {
+  it("提交前回读完整输入；内容发生变化时不点发送", async () => {
+    let draft = "";
+    let submits = 0;
+    const page = {
+      read() { return evidence({}); },
+      writePrompt(prompt: string) { draft = prompt; return true; },
+      readPrompt() { return draft; },
+      submit() { submits += 1; return true; },
+      watchStop() { return () => undefined; },
+    } as unknown as ChatGptEvidencePort;
+    const timing: ChatGptTurnTiming = {
+      polls: 1,
+      stableChecks: 1,
+      async wait() { draft = draft.slice(0, -1); },
+    };
+
+    const result = await runChatGptTurn(page, "一段完整的圆桌原话", timing);
+    assert.equal(result.ok, false);
+    assert.equal(submits, 0);
+    if (!result.ok) assert.equal(result.code, "prompt_changed");
+  });
+
   it("Stop 或错误证据不可读时，发送前必须 fail closed", async () => {
     const unreadable = evidence({ stopUnreadable: true, errorUnreadable: true });
     const script = scripted([unreadable, unreadable]);
@@ -540,6 +567,9 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
       writePrompt() {
         return true;
       },
+      readPrompt() {
+        return null;
+      },
       submit() {
         return true;
       },
@@ -753,16 +783,22 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     assert.equal(JSON.stringify(result).includes("B的正文"), false);
   });
 
-  it("空问题、缺少输入框，以及写入后等待再提交的顺序仍然成立", async () => {
+  it("空问题、缺少输入框，以及写入、等待、核对后再提交的顺序仍然成立", async () => {
     const idle = evidence({});
     const events: string[] = [];
+    let draft = "";
     const page: ChatGptEvidencePort = {
       read() {
         return idle;
       },
-      writePrompt() {
+      writePrompt(prompt: string) {
         events.push("write");
+        draft = prompt;
         return true;
+      },
+      readPrompt() {
+        events.push("readPrompt");
+        return draft;
       },
       submit() {
         events.push("submit");
@@ -792,7 +828,7 @@ describe("ChatGPT 轮次归属（离线证据契约，不是真实页面）", ()
     const ordered = await runChatGptTurn(page, "问题", timing);
     assert.equal(ordered.ok, false);
     if (!ordered.ok) assert.equal(ordered.code, "send_missing");
-    assert.deepEqual(events, ["write", "wait", "submit"]);
+    assert.deepEqual(events, ["write", "wait", "readPrompt", "submit"]);
   });
 
   it("地址规则只承认根路径、正式会话和指定临时形状，不猜测其他路径", () => {

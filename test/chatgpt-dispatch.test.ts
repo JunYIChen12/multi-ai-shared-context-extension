@@ -77,6 +77,7 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
     let phase: "empty" | "late" | "second" = "empty";
     let secondReads = 0;
     let submits = 0;
+    let draft = "";
     let started = () => undefined as void;
     const ready = new Promise<void>((resolve) => {
       started = () => resolve();
@@ -89,8 +90,12 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
         if (secondReads <= 2) return late;
         return secondShape;
       },
-      writePrompt() {
+      writePrompt(prompt: string) {
+        draft = prompt;
         return true;
+      },
+      readPrompt() {
+        return draft;
       },
       submit() {
         submits += 1;

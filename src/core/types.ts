@@ -19,7 +19,7 @@ export const PROVIDER_IDS = ["chatgpt", "grok", "gemini"] as const;
 
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
-export type TurnPhase = "independent" | "cross_review";
+export type TurnPhase = "independent" | "cross_review" | "roundtable";
 
 export type MessageStatus =
   | "complete"
@@ -63,6 +63,8 @@ export interface SessionMessage {
   errorCode: string | null;
   errorMessage: string | null;
   trust: Trust;
+  /** 仅用户消息可设置；用于本轮 @ 单家。 */
+  directedTo?: ProviderId;
 }
 
 export interface Session {
@@ -74,6 +76,13 @@ export interface Session {
   updatedAt: string;
   maxRounds: number;
   messages: SessionMessage[];
+  /** 本场消息成功送达的目标，留在页面会话内存和用户主动导出中。 */
+  deliveryReceipts?: DeliveryReceipt[];
+}
+
+export interface DeliveryReceipt {
+  messageId: string;
+  providerId: ProviderId;
 }
 
 export interface Injection {
@@ -85,12 +94,22 @@ export interface Injection {
   body: string;
 }
 
+export interface MeetingContextItem {
+  messageId: string;
+  speakerId: ProviderId | "user";
+  round: number;
+  phase: TurnPhase;
+  body: string;
+}
+
 export interface ProviderRequest {
   sessionId: string;
   round: number;
   phase: TurnPhase;
   userPrompt: string;
   injection: Injection[];
+  /** 圆桌模式下，仅包含目标模型尚未收到的本场原话。 */
+  meetingContext?: MeetingContextItem[];
 }
 
 export interface ProviderResponse {
@@ -129,7 +148,11 @@ export type StepFailure =
   | "no_providers"
   | "stop_max_rounds"
   | "no_injectable_opinions"
-  | "independent_round_missing";
+  | "independent_round_missing"
+  | "meeting_stopped"
+  | "awaiting_continue"
+  | "meeting_round_incomplete"
+  | "unverified_session";
 
 export type StepResult =
   | { ok: true; session: Session }

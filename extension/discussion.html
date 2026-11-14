@@ -26,6 +26,25 @@
           <button id="cross" type="button">第二轮交叉讨论</button>
         </div>
       </form>
+      <section aria-labelledby="roundtable-heading">
+        <h2 id="roundtable-heading">圆桌讨论</h2>
+        <p>请先连接 ChatGPT 和 Gemini 的本场专用新对话。开始后按 ChatGPT → Gemini 发言；每轮结束会暂停，不自动开启下一轮。</p>
+        <label for="roundtable-prompt">本场问题或新补充</label>
+        <textarea id="roundtable-prompt" rows="4" placeholder="写本场问题，或写一条准备让模型看到的新补充。"></textarea>
+        <label for="roundtable-target">可选：本轮只请谁回答</label>
+        <select id="roundtable-target" disabled>
+          <option value="">两家按顺序</option>
+          <option value="chatgpt">@ChatGPT 单独回答</option>
+          <option value="gemini">@Gemini 单独回答</option>
+        </select>
+        <div class="actions">
+          <button id="roundtable-start" type="button">开始圆桌（发送第一轮）</button>
+          <button id="roundtable-record" type="button">记录插话（不发送）</button>
+          <button id="roundtable-continue" type="button">继续本场</button>
+          <button id="roundtable-stop" type="button" disabled>停止本场</button>
+        </div>
+        <p id="roundtable-status" aria-live="polite">连接两家专用新对话后，可以开始本场圆桌。</p>
+      </section>
       <p id="summary" aria-live="polite"></p>
       <p id="error" role="alert"></p>
       <section id="transcript" aria-live="polite"></section>

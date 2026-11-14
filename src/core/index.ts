@@ -12,7 +12,9 @@ export type {
   AdapterMode,
   Clock,
   ContextSelection,
+  DeliveryReceipt,
   Injection,
+  MeetingContextItem,
   MessageStatus,
   Provenance,
   ProviderAdapter,
@@ -29,7 +31,14 @@ export type {
   TurnPhase,
 } from "./types.js";
 export { createTestClock, systemClock } from "./clock.js";
-export { formatInjection, injectionsForTarget, selectInjections } from "./context.js";
+export {
+  formatInjection,
+  formatRoundtableContext,
+  formatRoundtablePrompt,
+  injectionsForTarget,
+  selectInjections,
+  selectRoundtableContext,
+} from "./context.js";
 export {
   MOCK_PREFIX,
   isInjectableOpinion,
@@ -41,5 +50,6 @@ export {
 } from "./labels.js";
 export { assertExtensionManifestSafe, extensionManifestErrors } from "./manifest-policy.js";
 export { callAdapter, contractViolation, createSession, runCrossReview, runIndependentRound } from "./orchestrate.js";
+export { appendRoundtableUserInput, createRoundtableSession, runRoundtableRound } from "./roundtable.js";
 export { adaptersById, defaultAdapters, mockAdapter, mockAdapters, unimplementedAdapter } from "./providers.js";
 export { exportSession, parseSessionJsonl, sessionToJsonl, sessionToMarkdown } from "./persist.js";

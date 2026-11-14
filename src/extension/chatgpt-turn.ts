@@ -73,6 +73,9 @@ export async function runChatGptTurn(
     if (signal.aborted) {
       return failure("cancelled", "采集已取消，不会再发送或提交结果");
     }
+    if (page.readPrompt() !== trimmed) {
+      return failure("prompt_changed", "ChatGPT 草稿在发送前发生变化，未发送问题");
+    }
     const committed = page.read({ textTurnIds: [] });
     const blockedAgain = assessBaseline(committed);
     if (blockedAgain) {
@@ -143,7 +146,7 @@ export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function failure(code: TerminalCode | "invalid_request" | "prompt_missing" | "send_missing" | "cancelled", message: string): ChatGptAskResult {
+function failure(code: TerminalCode | "invalid_request" | "prompt_missing" | "prompt_changed" | "send_missing" | "cancelled", message: string): ChatGptAskResult {
   return { ok: false, code, message };
 }
 
