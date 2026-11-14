@@ -1,10 +1,11 @@
 import { systemClock } from "../core/clock.js";
-import { outcomeHeadline, summarizeSession } from "../core/labels.js";
+import { outcomeHeadline, providerLabel, summarizeSession } from "../core/labels.js";
 import { createSession, runCrossReview, runIndependentRound } from "../core/orchestrate.js";
+import { allowsNewIndependentSession, appendRoundtableUserInput, canSelectNextRoundTarget, createRoundtableSession, runRoundtableRound } from "../core/roundtable.js";
 import { exportSession, parseSessionFile } from "../core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
-import { PROVIDER_IDS } from "../core/types.js";
+import { MAX_ALLOWED_ROUNDS, PROVIDER_IDS } from "../core/types.js";
 import { createChatGptAdapter, createChatGptTabTransport } from "./chatgpt-connector.js";
 import { createGeminiAdapter, createGeminiTabTransport } from "./gemini-connector.js";
 import { CHATGPT_OUTER_TIMEOUT_MS, providerIdsForMode, timeoutMsForRound } from "./provider-selection.js";
@@ -32,6 +33,10 @@ const summary = document.querySelector("#summary");
 const errorBox = document.querySelector("#error");
 const transcript = document.querySelector("#transcript");
 const form = document.querySelector("#ask");
+const roundtablePrompt = document.querySelector("#roundtable-prompt");
+const roundtableTarget = document.querySelector("#roundtable-target");
+let roundtableController: AbortController | null = null;
+let roundtableBusy = false;
 
 form?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -44,6 +49,22 @@ document.querySelector("#run-mock")?.addEventListener("click", () => {
 
 document.querySelector("#cross")?.addEventListener("click", () => {
   void runSecondRound();
+});
+
+document.querySelector("#roundtable-start")?.addEventListener("click", () => {
+  void beginRoundtable();
+});
+
+document.querySelector("#roundtable-record")?.addEventListener("click", () => {
+  recordRoundtableInput();
+});
+
+document.querySelector("#roundtable-continue")?.addEventListener("click", () => {
+  void continueRoundtable();
+});
+
+document.querySelector("#roundtable-stop")?.addEventListener("click", () => {
+  roundtableController?.abort();
 });
 
 document.querySelector("#export-md")?.addEventListener("click", () => {
@@ -91,6 +112,10 @@ void validateConnectedTabs();
 
 async function runRound(mode: "mock" | "unimplemented" | "live"): Promise<void> {
   clearError();
+  if (!allowsNewIndependentSession(session)) {
+    showError("当前讨论页已有圆桌记录；请先导出并重新打开讨论页，再开始独立回答。");
+    return;
+  }
   if (!connectionsReady) {
     showError("正在确认连接状态，请稍后再发送。");
     return;
@@ -138,8 +163,193 @@ async function runSecondRound(): Promise<void> {
   render();
 }
 
-function selectedAdapters(mode: "mock" | "unimplemented" | "live"): ProviderAdapter[] {
-  return providerIdsForMode(mode, selectedProviderIds(), connectedProviderIds()).map((id) => {
+async function beginRoundtable(): Promise<void> {
+  clearError();
+  if (!connectionsReady || connectedProviderIds().length !== 2) {
+    showError("请先连接 ChatGPT 和 Gemini 的本场专用新对话。没有连接齐全时不会开始发送。");
+    return;
+  }
+  if (session) {
+    showError("当前讨论页已有记录。请先导出并重新打开讨论页，避免覆盖旧记录。");
+    return;
+  }
+  const prompt = roundtablePrompt instanceof HTMLTextAreaElement ? roundtablePrompt.value : "";
+  const options = roundtableOptions();
+  const created = createRoundtableSession(prompt, options);
+  if (!created.ok) {
+    showError(created.detail);
+    return;
+  }
+  session = created.session;
+  if (roundtablePrompt instanceof HTMLTextAreaElement) roundtablePrompt.value = "";
+  render();
+  await sendRoundtableRound(created.session, options);
+}
+
+function recordRoundtableInput(): void {
+  clearError();
+  if (!session || !isRoundtableSession(session)) {
+    showError("请先开始一场圆桌会议。");
+    return;
+  }
+  if (roundtableBusy) {
+    showError("本轮还在进行，等它结束或先停止本场。");
+    return;
+  }
+  const body = roundtablePrompt instanceof HTMLTextAreaElement ? roundtablePrompt.value : "";
+  const added = appendRoundtableUserInput(session, body, selectedRoundtableTarget());
+  if (!added.ok) {
+    showError(added.detail);
+    return;
+  }
+  session = added.session;
+  clearRoundtableDraft();
+  render();
+}
+
+async function continueRoundtable(): Promise<void> {
+  clearError();
+  if (!session || !isRoundtableSession(session)) {
+    showError("还没有可继续的圆桌会议。");
+    return;
+  }
+  if (roundtableBusy) return;
+  let next = session;
+  const body = roundtablePrompt instanceof HTMLTextAreaElement ? roundtablePrompt.value : "";
+  if (body.trim()) {
+    const added = appendRoundtableUserInput(next, body, selectedRoundtableTarget());
+    if (!added.ok) {
+      showError(added.detail);
+      return;
+    }
+    next = added.session;
+    clearRoundtableDraft();
+  } else if (!pendingRoundtableInput(next)) {
+    const added = appendRoundtableUserInput(next, "请继续讨论本场问题。", selectedRoundtableTarget());
+    if (!added.ok) {
+      showError(added.detail);
+      return;
+    }
+    next = added.session;
+    if (roundtableTarget instanceof HTMLSelectElement) roundtableTarget.value = "";
+  }
+  const pending = pendingRoundtableInput(next);
+  if (!pending) {
+    showError("当前没有可推进的用户发言。");
+    return;
+  }
+  const targets: ConnectedProviderId[] = pending.directedTo === "chatgpt" || pending.directedTo === "gemini"
+    ? [pending.directedTo]
+    : ["chatgpt", "gemini"];
+  const missing = targets.filter((providerId) => connectedTabs[providerId] === undefined);
+  if (missing.length > 0) {
+    session = next;
+    render();
+    showError(`请先重新连接：${missing.map(providerName).join("、")}。本轮补充已保留，尚未发送。`);
+    return;
+  }
+  session = next;
+  render();
+  await sendRoundtableRound(next, roundtableOptions());
+}
+
+async function sendRoundtableRound(current: Session, options: ReturnType<typeof roundtableOptions>): Promise<void> {
+  if (roundtableBusy) return;
+  const controller = new AbortController();
+  roundtableController = controller;
+  roundtableBusy = true;
+  renderRoundtableControls();
+  try {
+    const result = await runRoundtableRound(current, { ...options, signal: controller.signal });
+    session = result.session ?? current;
+    if (!result.ok) showError(result.detail);
+    render();
+  } finally {
+    if (roundtableController === controller) roundtableController = null;
+    roundtableBusy = false;
+    renderRoundtableControls();
+  }
+}
+
+function clearRoundtableDraft(): void {
+  if (roundtablePrompt instanceof HTMLTextAreaElement) roundtablePrompt.value = "";
+  if (roundtableTarget instanceof HTMLSelectElement) roundtableTarget.value = "";
+}
+
+function selectedRoundtableTarget(): "chatgpt" | "gemini" | undefined {
+  if (roundtableTarget instanceof HTMLSelectElement &&
+      (roundtableTarget.value === "chatgpt" || roundtableTarget.value === "gemini")) {
+    return roundtableTarget.value;
+  }
+  return undefined;
+}
+
+function pendingRoundtableInput(current: Session): Session["messages"][number] | null {
+  const completed = current.messages.reduce((round, message) =>
+    message.phase === "roundtable" && message.role !== "user" ? Math.max(round, message.round) : round, 0);
+  return current.messages.find((message) => message.phase === "roundtable" &&
+    message.role === "user" && message.round === completed + 1) ?? null;
+}
+
+function isRoundtableSession(current: Session): boolean {
+  return current.messages.some((message) => message.phase === "roundtable");
+}
+
+function roundtableOptions() {
+  const adapters = selectedAdapters("live", connectedProviderIds());
+  const timeoutMsByProvider = Object.fromEntries(adapters.map((adapter) =>
+    [adapter.id, timeoutMsForRound("live", adapter.id)]));
+  return {
+    clock: systemClock(),
+    adapters,
+    timeoutMs: Math.max(
+      CHATGPT_OUTER_TIMEOUT_MS,
+      ...Object.values(timeoutMsByProvider).filter((value): value is number => typeof value === "number"),
+    ),
+    timeoutMsByProvider,
+    maxRounds: MAX_ALLOWED_ROUNDS,
+  };
+}
+
+function renderRoundtableControls(): void {
+  const start = document.querySelector<HTMLButtonElement>("#roundtable-start");
+  const record = document.querySelector<HTMLButtonElement>("#roundtable-record");
+  const proceed = document.querySelector<HTMLButtonElement>("#roundtable-continue");
+  const stop = document.querySelector<HTMLButtonElement>("#roundtable-stop");
+  const status = document.querySelector("#roundtable-status");
+  const current = session;
+  const roundtable = current !== null && isRoundtableSession(current);
+  const failed = current?.messages.some((message) =>
+    message.phase === "roundtable" && message.role !== "user" && message.status !== "complete") ?? false;
+  const completed = current?.messages.reduce((round, message) =>
+    message.phase === "roundtable" && message.role !== "user" ? Math.max(round, message.round) : round, 0) ?? 0;
+  const pending = roundtable && current ? pendingRoundtableInput(current) : null;
+  const fullRoundComplete = roundtable && current !== null && completed > 0 && !pending && !failed;
+
+  if (start) start.disabled = !connectionsReady || connectedProviderIds().length !== 2 || roundtableBusy || current !== null;
+  if (record) record.disabled = !fullRoundComplete || roundtableBusy || completed >= (current?.maxRounds ?? 0);
+  if (proceed) proceed.disabled = !roundtable || roundtableBusy || failed || completed >= (current?.maxRounds ?? 0);
+  if (stop) stop.disabled = !roundtableBusy;
+  if (roundtableTarget instanceof HTMLSelectElement) {
+    roundtableTarget.disabled = roundtableBusy || !current || !canSelectNextRoundTarget(current);
+  }
+
+  if (!status) return;
+  if (roundtableBusy) status.textContent = "本轮发送中。停止会停止本场推进，但不保证撤销网页已提交的生成。";
+  else if (failed) status.textContent = "本场已停止；失败结果留空且不会自动重发。请先导出记录。";
+  else if (!roundtable) status.textContent = current
+    ? "当前有其他会话记录；请先导出并重新打开讨论页，再开始新圆桌。"
+    : "连接两家专用新对话后，可以开始本场圆桌；单家点名从第二轮开始。";
+  else if (pending) status.textContent = `第 ${pending.round} 轮的插话已记录，点击“继续本场”才会发送。`;
+  else if (current && completed >= current.maxRounds) status.textContent = `本场已达到 ${current.maxRounds} 轮上限。`;
+  else status.textContent = `第 ${completed} 轮已完成；可记录插话，或直接点“继续本场”。`;
+}
+
+function selectedAdapters(
+  mode: "mock" | "unimplemented" | "live",
+  checked = selectedProviderIds(),
+): ProviderAdapter[] {
+  return providerIdsForMode(mode, checked, connectedProviderIds()).map((id) => {
     if (mode === "mock") {
       return mockAdapter(id);
     }
@@ -227,7 +437,7 @@ function showConnectionState(): void {
     } else if (providers.length === 1) {
       connectionDetail = "本轮只发送到当前 ChatGPT 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。";
     } else if (providers.length === 2) {
-      connectionDetail = "本轮会并行发送到已连接的 ChatGPT 与 Gemini 标签页。Gemini 提问会附一次性校验标记；两家分别按自己的规则认领回复。刷新或关闭对应标签页后，该家连接会断开。";
+      connectionDetail = "普通模式并行发送到已连接的两家；圆桌模式按 ChatGPT → Gemini 依次发送。Gemini 会附一次性校验标记；刷新或关闭对应标签页后，该家连接会断开。";
     } else if (disconnected.length > 0) {
       connectionDetail = `${disconnected.map(providerName).join("、")}标签页已刷新或关闭，请重新点击扩展连接。`;
     }
@@ -264,6 +474,7 @@ function showConnectionState(): void {
     grok.disabled = providers.length > 0;
     if (providers.length > 0) grok.checked = false;
   }
+  renderRoundtableControls();
 }
 
 async function attachConnection(request: ConnectionRequest): Promise<ConnectionRejectionCode | null> {
@@ -363,6 +574,7 @@ function render(): void {
   transcript.replaceChildren();
   if (!session) {
     summary.textContent = "";
+    renderRoundtableControls();
     return;
   }
   summary.textContent = summarizeSession(session);
@@ -374,7 +586,9 @@ function render(): void {
     article.dataset.headline = headline;
     const title = document.createElement("h3");
     const who = message.providerId ?? "用户";
-    title.textContent = `第 ${message.round} 轮 · ${who} · ${headline}`;
+    const phase = message.phase === "roundtable" ? "圆桌 · " : "";
+    const direction = message.directedTo ? `（@${providerLabel(message.directedTo)}）` : "";
+    title.textContent = `第 ${message.round} 轮 · ${phase}${who} · ${headline}${direction}`;
     const body = document.createElement("pre");
     body.textContent = message.body || message.errorMessage || "（无正文）";
     article.append(title, body);
@@ -389,6 +603,7 @@ function render(): void {
     }
     transcript.append(article);
   }
+  renderRoundtableControls();
 }
 
 function downloadCurrent(kind: "markdown" | "jsonl"): void {

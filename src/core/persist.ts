@@ -1,5 +1,5 @@
 import { isInjectableOpinion, outcomeHeadline, providerLabel } from "./labels.js";
-import type { Provenance, ProviderId, Session, SessionMessage, Trust } from "./types.js";
+import type { DeliveryReceipt, Provenance, ProviderId, Session, SessionMessage, Trust } from "./types.js";
 import {
   MAX_ALLOWED_ROUNDS,
   MAX_IMPORT_CHARS,
@@ -41,6 +41,7 @@ export function sessionToJsonl(session: Session): string {
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     maxRounds: session.maxRounds,
+    deliveryReceipts: session.deliveryReceipts ?? [],
   };
   const lines = [JSON.stringify(header)];
   for (const message of session.messages) {
@@ -56,11 +57,12 @@ export function sessionToMarkdown(session: Session): string {
     `- 需求: ${session.requirementId}`,
     `- 会话: ${session.id}`,
     `- 轮次上限: ${session.maxRounds}`,
-    "- 说明: 本文件是可读副本。恢复会话请使用同一次导出的 JSONL。导入后的记录一律视为未验证本地数据。",
+    "- 说明: 本文件是可读副本。投递回执只表示本扩展完成了当轮发送采集，不代表厂商永久或完整记住内容。恢复会话请使用同一次导出的 JSONL；导入后的记录一律视为未验证本地数据。",
     "",
   ];
   for (const message of session.messages) {
-    lines.push(`## ${heading(message)}`, "");
+    const directedTo = message.directedTo ? `（@${providerLabel(message.directedTo)}）` : "";
+    lines.push(`## ${heading(message)}${directedTo}`, "");
     if (message.role === "user" || message.body) {
       lines.push(message.body, "");
     }
@@ -75,6 +77,13 @@ export function sessionToMarkdown(session: Session): string {
       lines.push("");
     }
     lines.push(`记录属性: source=${message.sourceKind}; status=${message.status}; trust=${message.trust}`, "");
+  }
+  if (session.deliveryReceipts?.length) {
+    lines.push("## 投递记录", "");
+    for (const receipt of session.deliveryReceipts) {
+      lines.push(`- message:${receipt.messageId} → ${providerLabel(receipt.providerId)}`);
+    }
+    lines.push("");
   }
   if (!session.messages.some(isInjectableOpinion)) {
     lines.push("当前没有可注入的已完成观点。未接入、失败和超时不是模型回答。", "");
@@ -140,6 +149,7 @@ export function parseSessionJsonl(text: string): ParseResult {
     ids.add(message.id);
     messages.push(message);
   }
+  validateDeliveryReceipts(header.deliveryReceipts ?? [], messages, errors);
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -154,7 +164,7 @@ export function parseSessionJsonl(text: string): ParseResult {
 
 function heading(message: SessionMessage): string {
   const who = message.providerId ? providerLabel(message.providerId) : "用户";
-  const phase = message.phase === "independent" ? "独立回答" : "交叉讨论";
+  const phase = message.phase === "independent" ? "独立回答" : message.phase === "cross_review" ? "交叉讨论" : "圆桌讨论";
   return `第 ${message.round} 轮 · ${phase} · ${who} · ${outcomeHeadline(message)}`;
 }
 
@@ -175,6 +185,7 @@ function serializeMessage(message: SessionMessage): Record<string, unknown> {
     provenance: message.provenance,
     errorCode: message.errorCode,
     errorMessage: message.errorMessage,
+    ...(message.directedTo ? { directedTo: message.directedTo } : {}),
   };
 }
 
@@ -236,6 +247,7 @@ function readSessionHeader(raw: Record<string, unknown>, errors: string[]): Omit
   const createdAt = raw.createdAt;
   const updatedAt = raw.updatedAt;
   const maxRounds = raw.maxRounds;
+  const deliveryReceipts = readDeliveryReceipts(raw.deliveryReceipts, errors);
   if (schemaVersion !== SCHEMA_VERSION) {
     errors.push(`不支持的 schemaVersion: ${String(schemaVersion)}`);
   }
@@ -270,7 +282,56 @@ function readSessionHeader(raw: Record<string, unknown>, errors: string[]): Omit
     createdAt: String(createdAt),
     updatedAt: String(updatedAt),
     maxRounds: Number(maxRounds),
+    deliveryReceipts,
   };
+}
+
+function readDeliveryReceipts(value: unknown, errors: string[]): DeliveryReceipt[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_MESSAGES * 2) {
+    errors.push("deliveryReceipts 无效");
+    return [];
+  }
+  const receipts: DeliveryReceipt[] = [];
+  const keys = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      errors.push("deliveryReceipts 项无效");
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const messageId = record.messageId;
+    const providerId = record.providerId;
+    if (typeof messageId !== "string" || messageId.length === 0 || messageId.length > 80 || !isProviderId(providerId)) {
+      errors.push("deliveryReceipts 消息或目标无效");
+      continue;
+    }
+    const key = `${messageId}:${providerId}`;
+    if (keys.has(key)) {
+      errors.push("deliveryReceipts 含重复投递");
+      continue;
+    }
+    keys.add(key);
+    receipts.push({ messageId, providerId });
+  }
+  return receipts;
+}
+
+function validateDeliveryReceipts(
+  receipts: readonly DeliveryReceipt[],
+  messages: readonly SessionMessage[],
+  errors: string[],
+): void {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  for (const receipt of receipts) {
+    const message = byId.get(receipt.messageId);
+    if (!message || message.phase !== "roundtable" || message.status !== "complete" ||
+        (message.role === "user" && message.sourceKind !== "user") ||
+        (message.role === "assistant" && (message.sourceKind !== "provider" || message.providerId === receipt.providerId)) ||
+        (message.role !== "user" && message.role !== "assistant")) {
+      errors.push(`deliveryReceipts 引用的 message:${receipt.messageId} 不可投递`);
+    }
+  }
 }
 
 function readMessage(
@@ -283,7 +344,7 @@ function readMessage(
   const id = expectString(raw.id, lineNumber, "id", 80, errors);
   const messageSessionId = expectString(raw.sessionId, lineNumber, "sessionId", 80, errors);
   const role = expectEnum(raw.role, ["user", "assistant", "system"] as const, lineNumber, "role", errors);
-  const phase = expectEnum(raw.phase, ["independent", "cross_review"] as const, lineNumber, "phase", errors);
+  const phase = expectEnum(raw.phase, ["independent", "cross_review", "roundtable"] as const, lineNumber, "phase", errors);
   const status = expectEnum(
     raw.status,
     ["complete", "failed", "timeout", "not_connected", "cancelled"] as const,
@@ -311,12 +372,16 @@ function readMessage(
   const errorCode = expectNullableString(raw.errorCode, lineNumber, "errorCode", 80, errors);
   const errorMessage = expectNullableString(raw.errorMessage, lineNumber, "errorMessage", 500, errors);
   const provenance = expectProvenance(raw.provenance, lineNumber, errors);
+  const directedTo = raw.directedTo === undefined ? undefined : readDirectedTo(raw.directedTo, lineNumber, errors);
   const round = raw.round;
   if (typeof round !== "number" || !Number.isInteger(round) || round < 1 || round > MAX_ALLOWED_ROUNDS) {
     errors.push(`第 ${lineNumber} 行 round 无效`);
   }
   if (messageSessionId && messageSessionId !== sessionId) {
     errors.push(`第 ${lineNumber} 行 sessionId 与会话不一致`);
+  }
+  if (directedTo && (role !== "user" || phase !== "roundtable")) {
+    errors.push(`第 ${lineNumber} 行 directedTo 仅可用于圆桌用户发言`);
   }
   if (errors.length > before) {
     return null;
@@ -336,6 +401,7 @@ function readMessage(
     provenance,
     errorCode,
     errorMessage,
+    ...(directedTo ? { directedTo } : {}),
     trust: "local_unverified_import" satisfies Trust,
   };
   const consistency = consistencyError(message);
@@ -400,7 +466,7 @@ function expectProvenance(value: unknown, lineNumber: number, errors: string[]):
     const phase = record.phase;
     const messageId = record.messageId;
     const round = record.round;
-    if (!isProviderId(providerId) || (phase !== "independent" && phase !== "cross_review")) {
+    if (!isProviderId(providerId) || (phase !== "independent" && phase !== "cross_review" && phase !== "roundtable")) {
       errors.push(`第 ${lineNumber} 行 provenance 来源无效`);
       continue;
     }
@@ -415,6 +481,14 @@ function expectProvenance(value: unknown, lineNumber: number, errors: string[]):
     items.push({ providerId, phase, messageId, round });
   }
   return items;
+}
+
+function readDirectedTo(value: unknown, lineNumber: number, errors: string[]): ProviderId | undefined {
+  if (!isProviderId(value)) {
+    errors.push(`第 ${lineNumber} 行 directedTo 无效`);
+    return undefined;
+  }
+  return value;
 }
 
 function expectProvider(value: unknown, lineNumber: number, errors: string[]): ProviderId | null {

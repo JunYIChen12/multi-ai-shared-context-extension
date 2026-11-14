@@ -29,6 +29,29 @@ main {
   max-width: 760px;
 }
 
+main > section[aria-labelledby="roundtable-heading"] {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #9b8bc4;
+  background: #f7f3fb;
+}
+
+main > section[aria-labelledby="roundtable-heading"] h2,
+main > section[aria-labelledby="roundtable-heading"] p {
+  margin: 0;
+}
+
+main > section[aria-labelledby="roundtable-heading"] label {
+  display: grid;
+  gap: 6px;
+}
+
+#roundtable-target {
+  width: fit-content;
+  font: inherit;
+}
+
 label[for="prompt"] {
   display: grid;
   gap: 6px;

@@ -26,6 +26,22 @@ function done(text: string, ids: { user: string; assistant: string }): PageEvide
 }
 
 describe("同一标签页的采集锁（离线，不是真实页面）", () => {
+  it("只把显式圆桌来源标记传给 ChatGPT 执行器，默认按普通提问处理", async () => {
+    const roundtableInputs: boolean[] = [];
+    const gate = createCollectionGate<ChatGptAskResult>(
+      async (_prompt, _signal, roundtablePrompt) => {
+        roundtableInputs.push(roundtablePrompt);
+        return { ok: true, body: "OK" };
+      },
+      { ok: false, code: "in_flight", message: "同一请求正在处理或已经结束，不会再次发送" },
+      { ok: false, code: "in_flight", message: "这个标签页已有进行中的采集，不会再次发送" },
+    );
+
+    assert.deepEqual(await gate.ask("roundtable", "圆桌正文", true), { ok: true, body: "OK" });
+    assert.deepEqual(await gate.ask("independent", "普通问题"), { ok: true, body: "OK" });
+    assert.deepEqual(roundtableInputs, [true, false]);
+  });
+
   it("两个入口同时请求时只发送一次，重复请求不会再发送", async () => {
     let runs = 0;
     let release = () => undefined as void;
@@ -77,6 +93,7 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
     let phase: "empty" | "late" | "second" = "empty";
     let secondReads = 0;
     let submits = 0;
+    let draft = "";
     let started = () => undefined as void;
     const ready = new Promise<void>((resolve) => {
       started = () => resolve();
@@ -89,8 +106,12 @@ describe("同一标签页的采集锁（离线，不是真实页面）", () => {
         if (secondReads <= 2) return late;
         return secondShape;
       },
-      writePrompt() {
+      writePrompt(prompt: string) {
+        draft = prompt;
         return true;
+      },
+      readPrompt() {
+        return draft;
       },
       submit() {
         submits += 1;

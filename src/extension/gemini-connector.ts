@@ -1,5 +1,6 @@
 import { MAX_MESSAGE_BODY_CHARS } from "../core/types.js";
 import type { MessageStatus, ProviderAdapter, ProviderRequest, ProviderResponse } from "../core/types.js";
+import { formatRoundtablePrompt } from "../core/context.js";
 
 export const GEMINI_CHANNEL = "multi-ai-gemini-v1" as const;
 export const GEMINI_OUTER_TIMEOUT_MS = 6 * 60_000;
@@ -21,7 +22,8 @@ export type GeminiErrorCode =
   | "navigation"
   | "page_error"
   | "cancelled"
-  | "ambiguous_turn";
+  | "ambiguous_turn"
+  | "prompt_too_large";
 
 export interface GeminiAskRequest {
   channel: typeof GEMINI_CHANNEL;
@@ -78,6 +80,7 @@ const ERROR_CODES = new Set<GeminiErrorCode>([
   "page_error",
   "cancelled",
   "ambiguous_turn",
+  "prompt_too_large",
 ]);
 
 export function createGeminiAdapter(transport: GeminiTransport): ProviderAdapter {
@@ -85,15 +88,19 @@ export function createGeminiAdapter(transport: GeminiTransport): ProviderAdapter
     id: "gemini",
     mode: "live",
     async respond(request, context): Promise<ProviderResponse> {
-      if (request.phase !== "independent") {
-        return failed("unsupported_phase", "本轮只允许 Gemini 第一轮独立回答");
+      if (request.phase !== "independent" && request.phase !== "roundtable") {
+        return failed("unsupported_phase", "Gemini 仅支持独立回答或已批准的圆桌讨论");
       }
       const signal = context?.signal;
       if (signal?.aborted) {
         return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
       }
       try {
-        const result = parseResult(await transport.send(toAskRequest(request), signal));
+        const askRequest = toAskRequest(request);
+        if (askRequest.prompt.length > MAX_MESSAGE_BODY_CHARS) {
+          return failed("prompt_too_large", "署名原文与校验标记拼接后超过长度上限，未发送");
+        }
+        const result = parseResult(await transport.send(askRequest, signal));
         if (signal?.aborted) {
           return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
         }
@@ -190,10 +197,13 @@ export async function connectActiveGeminiTab(port: GeminiConnectionPort): Promis
 
 function toAskRequest(request: ProviderRequest): GeminiAskRequest {
   const requestId = crypto.randomUUID();
+  const content = request.phase === "roundtable"
+    ? formatRoundtablePrompt(request.userPrompt, request.round, request.meetingContext ?? [])
+    : request.userPrompt;
   return {
     channel: GEMINI_CHANNEL,
     type: "ask",
-    prompt: `${request.userPrompt}\n\n[本次校验: ${requestId}]`,
+    prompt: `${content}\n\n[本次校验: ${requestId}]`,
     requestId,
   };
 }

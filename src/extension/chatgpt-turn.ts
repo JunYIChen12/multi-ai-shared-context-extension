@@ -38,6 +38,7 @@ export async function runChatGptTurn(
   timing: ChatGptTurnTiming = DEFAULT_CHATGPT_TIMING,
   signal: AbortSignal = new AbortController().signal,
   ledger: SendLedger = createSendLedger(),
+  roundtablePrompt = false,
 ): Promise<ChatGptAskResult> {
   const trimmed = prompt.trim();
   if (!trimmed || trimmed.length > MAX_MESSAGE_BODY_CHARS) {
@@ -72,6 +73,10 @@ export async function runChatGptTurn(
     await timing.wait(signal);
     if (signal.aborted) {
       return failure("cancelled", "采集已取消，不会再发送或提交结果");
+    }
+    const draft = page.readPrompt();
+    if (draft !== trimmed && !(roundtablePrompt && matchesRoundtableLineBreakNormalization(trimmed, draft))) {
+      return failure("prompt_changed", "ChatGPT 草稿在发送前发生变化，未发送问题");
     }
     const committed = page.read({ textTurnIds: [] });
     const blockedAgain = assessBaseline(committed);
@@ -126,6 +131,20 @@ export async function runChatGptTurn(
   }
 }
 
+function matchesRoundtableLineBreakNormalization(expected: string, actual: string | null): boolean {
+  if (actual === null || actual.length !== expected.length) return false;
+  let normalizedLineBreak = false;
+  for (let index = 0; index < expected.length; index += 1) {
+    if (expected[index] === actual[index]) continue;
+    if (expected[index] === "\n" && actual[index] === " ") {
+      normalizedLineBreak = true;
+      continue;
+    }
+    return false;
+  }
+  return normalizedLineBreak;
+}
+
 export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) {
     return Promise.reject(abortError());
@@ -143,7 +162,7 @@ export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function failure(code: TerminalCode | "invalid_request" | "prompt_missing" | "send_missing" | "cancelled", message: string): ChatGptAskResult {
+function failure(code: TerminalCode | "invalid_request" | "prompt_missing" | "prompt_changed" | "send_missing" | "cancelled", message: string): ChatGptAskResult {
   return { ok: false, code, message };
 }
 

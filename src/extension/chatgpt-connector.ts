@@ -1,11 +1,13 @@
 import type { MessageStatus, ProviderAdapter, ProviderRequest, ProviderResponse } from "../core/types.js";
 import { MAX_MESSAGE_BODY_CHARS } from "../core/types.js";
+import { formatRoundtablePrompt } from "../core/context.js";
 
 export const CHATGPT_CHANNEL = "multi-ai-chatgpt-v1" as const;
 
 export type ChatGptErrorCode =
   | "busy"
   | "prompt_missing"
+  | "prompt_changed"
   | "send_missing"
   | "start_timeout"
   | "completion_timeout"
@@ -20,12 +22,14 @@ export type ChatGptErrorCode =
   | "navigation"
   | "page_error"
   | "cancelled"
-  | "in_flight";
+  | "in_flight"
+  | "prompt_too_large";
 
 export interface ChatGptAskRequest {
   channel: typeof CHATGPT_CHANNEL;
   type: "ask";
   prompt: string;
+  roundtablePrompt?: boolean;
   requestId: string;
 }
 
@@ -60,6 +64,7 @@ export type ChatGptConnectionResult =
 const ERROR_CODES = new Set<ChatGptErrorCode>([
   "busy",
   "prompt_missing",
+  "prompt_changed",
   "send_missing",
   "start_timeout",
   "completion_timeout",
@@ -75,6 +80,7 @@ const ERROR_CODES = new Set<ChatGptErrorCode>([
   "page_error",
   "cancelled",
   "in_flight",
+  "prompt_too_large",
 ]);
 
 export function createChatGptAdapter(transport: ChatGptTransport): ProviderAdapter {
@@ -82,15 +88,19 @@ export function createChatGptAdapter(transport: ChatGptTransport): ProviderAdapt
     id: "chatgpt",
     mode: "live",
     async respond(request, context): Promise<ProviderResponse> {
-      if (request.phase !== "independent") {
-        return failed("unsupported_phase", "本轮只允许 ChatGPT 第一轮独立回答");
+      if (request.phase !== "independent" && request.phase !== "roundtable") {
+        return failed("unsupported_phase", "ChatGPT 仅支持独立回答或已批准的圆桌讨论");
       }
       const signal = context?.signal;
       if (signal?.aborted) {
         return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
       }
       try {
-        const result = parseResult(await transport.send(toAskRequest(request), signal));
+        const askRequest = toAskRequest(request);
+        if (askRequest.prompt.length > MAX_MESSAGE_BODY_CHARS) {
+          return failed("prompt_too_large", "署名原文与本轮发言拼接后超过长度上限，未发送");
+        }
+        const result = parseResult(await transport.send(askRequest, signal));
         if (signal?.aborted) {
           return failed("cancelled", "采集已取消，不会再发送或提交结果", "cancelled");
         }
@@ -193,7 +203,10 @@ function toAskRequest(request: ProviderRequest): ChatGptAskRequest {
   return {
     channel: CHATGPT_CHANNEL,
     type: "ask",
-    prompt: request.userPrompt,
+    prompt: request.phase === "roundtable"
+      ? formatRoundtablePrompt(request.userPrompt, request.round, request.meetingContext ?? [])
+      : request.userPrompt,
+    roundtablePrompt: request.phase === "roundtable",
     requestId: crypto.randomUUID(),
   };
 }

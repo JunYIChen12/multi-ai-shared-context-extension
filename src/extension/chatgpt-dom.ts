@@ -164,7 +164,11 @@ export function createDomEvidencePort(
         return false;
       }
       writeEditable(input, prompt);
-      return true;
+      return readEditable(input) === prompt;
+    },
+    readPrompt() {
+      const input = lastVisible(getRoot().querySelectorAll(CHATGPT_PROMPT_SELECTOR));
+      return input && canEdit(input) ? readEditable(input) : null;
     },
     submit() {
       const button = lastVisible(getRoot().querySelectorAll(CHATGPT_SEND_SELECTOR));
@@ -241,6 +245,11 @@ function writeEditable(element: EvidenceQueryElement, prompt: string): void {
   if (typeof dispatch === "function" && typeof InputEvent === "function") {
     dispatch.call(element, new InputEvent("input", { bubbles: true, data: prompt, inputType: "insertText" }));
   }
+}
+
+function readEditable(element: EvidenceQueryElement): string {
+  if ("value" in element) return String((element as { value?: unknown }).value ?? "");
+  return element.textContent ?? "";
 }
 
 function isDisabled(element: EvidenceQueryElement): boolean {
