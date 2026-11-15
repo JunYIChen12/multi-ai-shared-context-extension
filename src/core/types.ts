@@ -19,7 +19,7 @@ export const PROVIDER_IDS = ["chatgpt", "grok", "gemini"] as const;
 
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
-export type TurnPhase = "independent" | "cross_review" | "roundtable";
+export type TurnPhase = "independent" | "cross_review" | "roundtable" | "groupchat";
 
 export type MessageStatus =
   | "complete"
@@ -65,6 +65,12 @@ export interface SessionMessage {
   trust: Trust;
   /** 仅用户消息可设置；用于本轮 @ 单家。 */
   directedTo?: ProviderId;
+  /** 群聊用户消息的点名目标；不设置表示只留本地。 */
+  targetProviders?: ProviderId[];
+  /** 群聊中是否允许作为后续共享上下文。 */
+  shared?: boolean;
+  /** 群聊回复对应的独立请求。 */
+  requestId?: string;
 }
 
 export interface Session {
@@ -78,11 +84,34 @@ export interface Session {
   messages: SessionMessage[];
   /** 本场消息成功送达的目标，留在页面会话内存和用户主动导出中。 */
   deliveryReceipts?: DeliveryReceipt[];
+  /** 群聊每家独立的请求队列；只存在于当前页面会话。 */
+  groupChatRequests?: GroupChatRequest[];
+  /** 失败或结果未知后暂停的群聊目标。 */
+  groupChatPausedProviders?: ProviderId[];
 }
+
+export type DeliveryState = "confirmed" | "failed" | "unknown";
 
 export interface DeliveryReceipt {
   messageId: string;
   providerId: ProviderId;
+  state?: DeliveryState;
+}
+
+export type GroupChatRequestStatus = "queued" | "sending" | "complete" | "failed" | "unknown" | "cancelled";
+
+export interface GroupChatRequest {
+  id: string;
+  sessionId: string;
+  messageId: string;
+  providerId: ProviderId;
+  round: number;
+  contextMessageIds: string[];
+  status: GroupChatRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  errorCode: string | null;
+  errorMessage: string | null;
 }
 
 export interface Injection {
@@ -108,7 +137,7 @@ export interface ProviderRequest {
   phase: TurnPhase;
   userPrompt: string;
   injection: Injection[];
-  /** 圆桌模式下，仅包含目标模型尚未收到的本场原话。 */
+  /** 圆桌或群聊模式下，仅包含目标模型尚未确认送达的本场完整原话。 */
   meetingContext?: MeetingContextItem[];
 }
 

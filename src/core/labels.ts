@@ -13,7 +13,7 @@ export function providerLabel(id: ProviderId): string {
 export const MOCK_PREFIX = "[MOCK]";
 
 export function mockBody(id: ProviderId, phase: TurnPhase, injectionCount: number): string {
-  const phaseText = phase === "independent" ? "独立回答演示" : phase === "cross_review" ? "交叉讨论演示" : "圆桌讨论演示";
+  const phaseText = phase === "independent" ? "独立回答演示" : phase === "cross_review" ? "交叉讨论演示" : phase === "roundtable" ? "圆桌讨论演示" : "AI 群聊演示";
   return `${MOCK_PREFIX} 演示数据，不是 ${providerLabel(id)} 的真实回复，不能当作模型观点。${phaseText}。注入条数=${injectionCount}。`;
 }
 

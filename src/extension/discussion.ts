@@ -2,6 +2,14 @@ import { systemClock } from "../core/clock.js";
 import { outcomeHeadline, providerLabel, summarizeSession } from "../core/labels.js";
 import { createSession, runCrossReview, runIndependentRound } from "../core/orchestrate.js";
 import { allowsNewIndependentSession, appendRoundtableUserInput, canSelectNextRoundTarget, createRoundtableSession, runRoundtableRound } from "../core/roundtable.js";
+import {
+  appendGroupChatMessage,
+  cancelQueuedGroupChatRequests,
+  createGroupChatSession,
+  mergeGroupChatExecution,
+  resumeGroupChatProvider,
+  runGroupChatQueues,
+} from "../core/groupchat.js";
 import { exportSession, parseSessionFile } from "../core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
@@ -37,6 +45,8 @@ const roundtablePrompt = document.querySelector("#roundtable-prompt");
 const roundtableTarget = document.querySelector("#roundtable-target");
 let roundtableController: AbortController | null = null;
 let roundtableBusy = false;
+const groupChatPrompt = document.querySelector("#groupchat-prompt");
+let groupChatBusy = false;
 
 form?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -45,6 +55,27 @@ form?.addEventListener("submit", (event) => {
 
 document.querySelector("#run-mock")?.addEventListener("click", () => {
   void runRound("mock");
+});
+
+document.querySelector("#groupchat-send")?.addEventListener("click", () => {
+  void sendGroupChatMessage();
+});
+
+document.querySelector("#groupchat-cancel")?.addEventListener("click", () => {
+  if (!session || !isGroupChatSession(session)) return;
+  const cancelled = cancelQueuedGroupChatRequests(session);
+  if (cancelled.ok) {
+    session = cancelled.session;
+    render();
+  }
+});
+
+document.querySelector("#groupchat-resume-chatgpt")?.addEventListener("click", () => {
+  void resumeGroupChat("chatgpt");
+});
+
+document.querySelector("#groupchat-resume-gemini")?.addEventListener("click", () => {
+  void resumeGroupChat("gemini");
 });
 
 document.querySelector("#cross")?.addEventListener("click", () => {
@@ -112,8 +143,8 @@ void validateConnectedTabs();
 
 async function runRound(mode: "mock" | "unimplemented" | "live"): Promise<void> {
   clearError();
-  if (!allowsNewIndependentSession(session)) {
-    showError("当前讨论页已有圆桌记录；请先导出并重新打开讨论页，再开始独立回答。");
+  if (!allowsNewIndependentSession(session) || (session !== null && isGroupChatSession(session))) {
+    showError("当前讨论页已有其他模式记录；请先导出并重新打开讨论页，再开始独立回答。");
     return;
   }
   if (!connectionsReady) {
@@ -144,7 +175,7 @@ async function runSecondRound(): Promise<void> {
     showError("正在确认连接状态，请稍后再试。");
     return;
   }
-  if (!session) {
+  if (!session || isGroupChatSession(session)) {
     showError("还没有第一轮记录。");
     return;
   }
@@ -161,6 +192,93 @@ async function runSecondRound(): Promise<void> {
   }
   session = ran.session;
   render();
+}
+
+async function sendGroupChatMessage(): Promise<void> {
+  clearError();
+  if (session && !isGroupChatSession(session)) {
+    showError("当前讨论页已有其他模式记录；请先导出并重新打开讨论页，再开始群聊。");
+    return;
+  }
+  const body = groupChatPrompt instanceof HTMLTextAreaElement ? groupChatPrompt.value : "";
+  const targets = selectedGroupChatTargets();
+  const missing = targets.filter((providerId) => connectedTabs[providerId] === undefined);
+  if (missing.length > 0) {
+    showError(`请先连接：${missing.map(providerName).join("、")}。未记录或发送这条消息。`);
+    return;
+  }
+  const current = session ?? createGroupChatSession("AI 群聊");
+  const added = appendGroupChatMessage(current, body, targets);
+  if (!added.ok) {
+    showError(added.detail);
+    return;
+  }
+  session = added.session;
+  if (groupChatPrompt instanceof HTMLTextAreaElement) groupChatPrompt.value = "";
+  render();
+  if (!groupChatBusy) await drainGroupChatQueues();
+}
+
+async function resumeGroupChat(providerId: "chatgpt" | "gemini"): Promise<void> {
+  if (!session || !isGroupChatSession(session)) return;
+  const resumed = resumeGroupChatProvider(session, providerId);
+  if (!resumed.ok) {
+    showError(resumed.detail);
+    return;
+  }
+  session = resumed.session;
+  render();
+  if (!groupChatBusy) await drainGroupChatQueues();
+}
+
+async function drainGroupChatQueues(): Promise<void> {
+  if (groupChatBusy || !session || !isGroupChatSession(session)) return;
+  if (!hasRunnableGroupChatRequests(session)) return;
+  groupChatBusy = true;
+  renderGroupChatControls();
+  const snapshot = session;
+  try {
+    const result = await runGroupChatQueues(snapshot, groupChatOptions());
+    // Keep messages added while a provider was awaiting its page response.
+    if (!result.ok) showError(result.detail);
+    session = mergeGroupChatExecution(session ?? snapshot, [result.session ?? snapshot]);
+    render();
+  } finally {
+    groupChatBusy = false;
+    renderGroupChatControls();
+  }
+  if (hasRunnableGroupChatRequests(session)) await drainGroupChatQueues();
+}
+
+function groupChatOptions() {
+  const adapters = selectedAdapters("live", connectedProviderIds());
+  const timeoutMsByProvider = Object.fromEntries(adapters.map((adapter) =>
+    [adapter.id, timeoutMsForRound("live", adapter.id)]));
+  return {
+    clock: systemClock(),
+    adapters,
+    timeoutMs: Math.max(
+      CHATGPT_OUTER_TIMEOUT_MS,
+      ...Object.values(timeoutMsByProvider).filter((value): value is number => typeof value === "number"),
+    ),
+    timeoutMsByProvider,
+  };
+}
+
+function selectedGroupChatTargets(): ("chatgpt" | "gemini")[] {
+  const targets: ("chatgpt" | "gemini")[] = [];
+  document.querySelectorAll('input[name="group-target"]:checked').forEach((node) => {
+    if (node instanceof HTMLInputElement && (node.value === "chatgpt" || node.value === "gemini")) {
+      targets.push(node.value);
+    }
+  });
+  return targets;
+}
+
+function hasRunnableGroupChatRequests(current: Session | null): boolean {
+  if (!current?.groupChatRequests) return false;
+  const paused = new Set(current.groupChatPausedProviders ?? []);
+  return current.groupChatRequests.some((request) => request.status === "queued" && !paused.has(request.providerId));
 }
 
 async function beginRoundtable(): Promise<void> {
@@ -295,6 +413,10 @@ function isRoundtableSession(current: Session): boolean {
   return current.messages.some((message) => message.phase === "roundtable");
 }
 
+function isGroupChatSession(current: Session): boolean {
+  return current.messages.some((message) => message.phase === "groupchat");
+}
+
 function roundtableOptions() {
   const adapters = selectedAdapters("live", connectedProviderIds());
   const timeoutMsByProvider = Object.fromEntries(adapters.map((adapter) =>
@@ -343,6 +465,33 @@ function renderRoundtableControls(): void {
   else if (pending) status.textContent = `第 ${pending.round} 轮的插话已记录，点击“继续本场”才会发送。`;
   else if (current && completed >= current.maxRounds) status.textContent = `本场已达到 ${current.maxRounds} 轮上限。`;
   else status.textContent = `第 ${completed} 轮已完成；可记录插话，或直接点“继续本场”。`;
+}
+
+function renderGroupChatControls(): void {
+  const current = session;
+  const isGroupChat = current !== null && isGroupChatSession(current);
+  const status = document.querySelector("#groupchat-status");
+  const send = document.querySelector<HTMLButtonElement>("#groupchat-send");
+  const cancel = document.querySelector<HTMLButtonElement>("#groupchat-cancel");
+  const paused = new Set(current?.groupChatPausedProviders ?? []);
+  if (send) send.disabled = current !== null && !isGroupChat;
+  if (cancel) cancel.disabled = !isGroupChat || groupChatBusy || !(current?.groupChatRequests ?? []).some((request) => request.status === "queued");
+  for (const providerId of ["chatgpt", "gemini"] as const) {
+    const button = document.querySelector<HTMLButtonElement>(`#groupchat-resume-${providerId}`);
+    if (button) button.disabled = !isGroupChat || groupChatBusy || !paused.has(providerId);
+  }
+  if (!status) return;
+  if (!isGroupChat) {
+    status.textContent = current ? "当前讨论页已有其他模式记录；请导出并重新打开后再开始群聊。" : "群聊尚未开始。";
+    return;
+  }
+  const requests = current.groupChatRequests ?? [];
+  const queued = requests.filter((request) => request.status === "queued").length;
+  const failed = requests.filter((request) => request.status === "failed" || request.status === "unknown").length;
+  if (groupChatBusy) status.textContent = "群聊请求处理中；新消息会按各家队列等待。";
+  else if (failed > 0) status.textContent = `有 ${failed} 条失败或未知结果；对应模型已暂停，不会自动重发。`;
+  else if (queued > 0) status.textContent = `还有 ${queued} 条请求排队。`;
+  else status.textContent = "群聊已暂停，等待下一条消息或用户恢复队列。";
 }
 
 function selectedAdapters(
@@ -474,7 +623,18 @@ function showConnectionState(): void {
     grok.disabled = providers.length > 0;
     if (providers.length > 0) grok.checked = false;
   }
+  for (const providerId of ["chatgpt", "gemini"] as const) {
+    const checkbox = document.querySelector<HTMLInputElement>(`input[name="group-target"][value="${providerId}"]`);
+    const label = document.querySelector(`#group-${providerId}-label`);
+    const connected = connectedTabs[providerId] !== undefined;
+    if (checkbox) {
+      checkbox.disabled = !connected || (session !== null && !isGroupChatSession(session));
+      if (!connected) checkbox.checked = false;
+    }
+    if (label) label.textContent = `@${providerName(providerId)}（${connected ? "已临时连接" : disconnectedProviders.has(providerId) ? "连接已断开" : "未接入"}）`;
+  }
   renderRoundtableControls();
+  renderGroupChatControls();
 }
 
 async function attachConnection(request: ConnectionRequest): Promise<ConnectionRejectionCode | null> {
@@ -575,6 +735,7 @@ function render(): void {
   if (!session) {
     summary.textContent = "";
     renderRoundtableControls();
+    renderGroupChatControls();
     return;
   }
   summary.textContent = summarizeSession(session);
@@ -586,9 +747,11 @@ function render(): void {
     article.dataset.headline = headline;
     const title = document.createElement("h3");
     const who = message.providerId ?? "用户";
-    const phase = message.phase === "roundtable" ? "圆桌 · " : "";
+    const phase = message.phase === "roundtable" ? "圆桌 · " : message.phase === "groupchat" ? "群聊 · " : "";
     const direction = message.directedTo ? `（@${providerLabel(message.directedTo)}）` : "";
+    const targets = message.targetProviders?.length ? `（@${message.targetProviders.map(providerLabel).join("、")}）` : "";
     title.textContent = `第 ${message.round} 轮 · ${phase}${who} · ${headline}${direction}`;
+    if (targets) title.textContent += targets;
     const body = document.createElement("pre");
     body.textContent = message.body || message.errorMessage || "（无正文）";
     article.append(title, body);
@@ -604,6 +767,7 @@ function render(): void {
     transcript.append(article);
   }
   renderRoundtableControls();
+  renderGroupChatControls();
 }
 
 function downloadCurrent(kind: "markdown" | "jsonl"): void {

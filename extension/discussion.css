@@ -37,6 +37,19 @@ main > section[aria-labelledby="roundtable-heading"] {
   background: #f7f3fb;
 }
 
+main > section[aria-labelledby="groupchat-heading"] {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #6c9a8b;
+  background: #f1f8f5;
+}
+
+main > section[aria-labelledby="groupchat-heading"] h2,
+main > section[aria-labelledby="groupchat-heading"] p {
+  margin: 0;
+}
+
 main > section[aria-labelledby="roundtable-heading"] h2,
 main > section[aria-labelledby="roundtable-heading"] p {
   margin: 0;
