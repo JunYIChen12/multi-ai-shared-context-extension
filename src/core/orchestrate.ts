@@ -11,6 +11,7 @@ import type {
   Session,
   SessionMessage,
   StepResult,
+  TurnPhase,
 } from "./types.js";
 import { DEFAULT_MAX_ROUNDS, MAX_ALLOWED_ROUNDS, MAX_MESSAGE_BODY_CHARS } from "./types.js";
 
@@ -20,6 +21,7 @@ export interface OrchestratorOptions {
   timeoutMs?: number;
   timeoutMsByProvider?: Partial<Record<ProviderId, number>>;
   maxRounds?: number;
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -169,11 +171,12 @@ export async function runCrossReview(
 export async function callAdapter(
   session: Session,
   providerId: ProviderId,
-  phase: "independent" | "cross_review",
+  phase: TurnPhase,
   round: number,
   userPrompt: string,
   injection: ProviderRequest["injection"],
   options: OrchestratorOptions,
+  meetingContext: ProviderRequest["meetingContext"] = [],
 ): Promise<SessionMessage> {
   const adapter = options.adapters.find((item) => item.id === providerId);
   const createdAt = options.clock.now();
@@ -184,12 +187,20 @@ export async function callAdapter(
     round,
     phase,
     createdAt,
-    provenance: injection.map((item) => ({
-      providerId: item.providerId,
-      round: item.round,
-      phase: item.phase,
-      messageId: item.messageId,
-    })),
+    provenance: [
+      ...injection.map((item) => ({
+        providerId: item.providerId,
+        round: item.round,
+        phase: item.phase,
+        messageId: item.messageId,
+      })),
+      ...(meetingContext ?? []).flatMap((item) => item.speakerId === "user" ? [] : [{
+        providerId: item.speakerId,
+        round: item.round,
+        phase: item.phase,
+        messageId: item.messageId,
+      }]),
+    ],
     trust: "created_by_core" as const,
   };
   if (!adapter) {
@@ -211,10 +222,23 @@ export async function callAdapter(
     phase,
     userPrompt,
     injection,
+    ...(meetingContext ? { meetingContext } : {}),
   };
   const timeoutMs = options.timeoutMsByProvider?.[providerId] ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let removeAbortListener: () => void = () => undefined;
+  if (options.signal?.aborted) return stoppedMessage(base, providerId, adapter.mode);
+  let rejectOnStop: ((error: Error) => void) | undefined;
+  const stopped = new Promise<never>((_, reject) => { rejectOnStop = reject; });
+  const onExternalAbort = () => {
+    controller.abort();
+    rejectOnStop?.(new Error("stopped"));
+  };
+  if (options.signal) {
+    options.signal.addEventListener("abort", onExternalAbort, { once: true });
+    removeAbortListener = () => options.signal?.removeEventListener("abort", onExternalAbort);
+  }
   const pending = adapter.respond(request, { signal: controller.signal });
   void pending.catch(() => undefined);
   const timeout = new Promise<never>((_, reject) => {
@@ -224,12 +248,16 @@ export async function callAdapter(
     }, timeoutMs);
   });
   try {
-    const response = await Promise.race([pending, timeout]);
+    const response = await Promise.race([pending, timeout, stopped]);
+    if (options.signal?.aborted) {
+      return stoppedMessage(base, providerId, adapter.mode);
+    }
     if (controller.signal.aborted) {
       return timeoutMessage(base, providerId, timeoutMs, adapter.mode);
     }
-    return messageFromResponse(base, response);
+    return messageFromResponse(base, response, injection, meetingContext ?? []);
   } catch (error) {
+    if (options.signal?.aborted) return stoppedMessage(base, providerId, adapter.mode);
     const timedOut = controller.signal.aborted || (error instanceof Error && error.message === "timeout");
     if (timedOut) {
       return timeoutMessage(base, providerId, timeoutMs, adapter.mode);
@@ -245,10 +273,28 @@ export async function callAdapter(
       errorMessage: shortError(error),
     };
   } finally {
+    removeAbortListener();
     if (timer) {
       clearTimeout(timer);
     }
   }
+}
+
+function stoppedMessage(
+  base: Omit<SessionMessage, "role" | "body" | "status" | "sourceKind" | "adapterMode" | "errorCode" | "errorMessage">,
+  providerId: ProviderId,
+  adapterMode: SessionMessage["adapterMode"],
+): SessionMessage {
+  return {
+    ...base,
+    role: "system",
+    body: "",
+    status: "cancelled",
+    sourceKind: "system",
+    adapterMode,
+    errorCode: "stopped",
+    errorMessage: `用户已停止本场；${providerId} 的结果未采信`,
+  };
 }
 
 function timeoutMessage(
@@ -278,6 +324,8 @@ function messageFromResponse(
     "role" | "body" | "status" | "sourceKind" | "adapterMode" | "errorCode" | "errorMessage"
   >,
   response: ProviderResponse,
+  injection: ProviderRequest["injection"],
+  meetingContext: NonNullable<ProviderRequest["meetingContext"]>,
 ): SessionMessage {
   const violation = contractViolation(response);
   if (violation) {
@@ -307,6 +355,20 @@ function messageFromResponse(
     adapterMode: response.mode,
     errorCode: response.error?.code ?? null,
     errorMessage: response.error?.message ?? null,
+    provenance: [
+      ...injection.map((item) => ({
+        providerId: item.providerId,
+        round: item.round,
+        phase: item.phase,
+        messageId: item.messageId,
+      })),
+      ...meetingContext.flatMap((item) => item.speakerId === "user" ? [] : [{
+        providerId: item.speakerId,
+        round: item.round,
+        phase: item.phase,
+        messageId: item.messageId,
+      }]),
+    ],
   };
 }
 

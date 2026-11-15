@@ -5,6 +5,7 @@ import { outcomeHeadline } from "../src/core/labels.js";
 import { createSession, runIndependentRound } from "../src/core/orchestrate.js";
 import { exportSession, parseSessionFile, parseSessionJsonl, sessionToMarkdown } from "../src/core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../src/core/providers.js";
+import { appendRoundtableUserInput, createRoundtableSession, runRoundtableRound } from "../src/core/roundtable.js";
 import type { ProviderAdapter, Session } from "../src/core/types.js";
 import { MAX_IMPORT_CHARS } from "../src/core/types.js";
 
@@ -177,5 +178,56 @@ describe("本地导出与恢复", () => {
 
     const oversized = parseSessionJsonl("x".repeat(MAX_IMPORT_CHARS + 1));
     assert.equal(oversized.ok, false);
+  });
+
+  it("圆桌导出保留阶段、@对象和投递回执；导入降级为不可续发", async () => {
+    const calls: string[] = [];
+    const adapters: ProviderAdapter[] = ["chatgpt", "gemini"].map((id) => ({
+      id: id as "chatgpt" | "gemini",
+      mode: "live",
+      async respond(request) {
+        calls.push(id);
+        return { mode: "live", status: "complete", body: `${id}-round-${request.round}` };
+      },
+    }));
+    const options = { clock: createTestClock(), adapters, timeoutMs: 1000, maxRounds: 4 };
+    const created = createRoundtableSession("本场测试问题", options);
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    const first = await runRoundtableRound(created.session, options);
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    const added = appendRoundtableUserInput(first.session, "只追问 Gemini", "gemini");
+    assert.equal(added.ok, true);
+    if (!added.ok) return;
+    const second = await runRoundtableRound(added.session, options);
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+
+    const exported = exportSession(second.session);
+    assert.match(exported.markdown, /圆桌讨论/);
+    assert.match(exported.markdown, /@Gemini/);
+    assert.match(exported.markdown, /投递记录/);
+    const parsed = parseSessionJsonl(exported.jsonl);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(parsed.session.messages.every((message) => message.phase === "roundtable"), true);
+    assert.equal(parsed.session.messages.find((message) => message.role === "user" && message.round === 2)?.directedTo, "gemini");
+    assert.deepEqual(parsed.session.deliveryReceipts, second.session.deliveryReceipts);
+    assert.equal(parsed.session.messages.every((message) => message.trust === "local_unverified_import"), true);
+
+    const appendImported = appendRoundtableUserInput(parsed.session, "不能续发导入记录");
+    assert.equal(appendImported.ok, false);
+    if (!appendImported.ok) assert.equal(appendImported.reason, "unverified_session");
+    const rerunImported = await runRoundtableRound(parsed.session, options);
+    assert.equal(rerunImported.ok, false);
+    if (!rerunImported.ok) assert.equal(rerunImported.reason, "unverified_session");
+    assert.deepEqual(calls, ["chatgpt", "gemini", "gemini"]);
+
+    const lines = exported.jsonl.trim().split("\n");
+    const header = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
+    header.deliveryReceipts = [{ messageId: "missing-message", providerId: "chatgpt" }];
+    const corrupted = parseSessionJsonl([JSON.stringify(header), ...lines.slice(1)].join("\n"));
+    assert.equal(corrupted.ok, false);
   });
 });

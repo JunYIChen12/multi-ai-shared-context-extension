@@ -34,6 +34,7 @@ export interface PageEvidence {
 export interface ChatGptEvidencePort {
   read(request: { textTurnIds: readonly string[] }): PageEvidence;
   writePrompt(prompt: string): boolean;
+  readPrompt(): string | null;
   submit(): boolean;
   watchStop(onStop: () => void): () => void;
 }

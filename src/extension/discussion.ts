@@ -1,10 +1,20 @@
 import { systemClock } from "../core/clock.js";
-import { outcomeHeadline, summarizeSession } from "../core/labels.js";
+import { outcomeHeadline, providerLabel, summarizeSession } from "../core/labels.js";
 import { createSession, runCrossReview, runIndependentRound } from "../core/orchestrate.js";
+import { allowsNewIndependentSession, appendRoundtableUserInput, canSelectNextRoundTarget, createRoundtableSession, runRoundtableRound } from "../core/roundtable.js";
+import {
+  appendGroupChatMessage,
+  beginGroupChatProviderQueue,
+  cancelQueuedGroupChatRequests,
+  createGroupChatSession,
+  mergeGroupChatExecution,
+  resumeGroupChatProvider,
+  runGroupChatProviderQueue,
+} from "../core/groupchat.js";
 import { exportSession, parseSessionFile } from "../core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
 import type { ProviderAdapter, ProviderId, Session } from "../core/types.js";
-import { PROVIDER_IDS } from "../core/types.js";
+import { MAX_ALLOWED_ROUNDS, PROVIDER_IDS } from "../core/types.js";
 import { createChatGptAdapter, createChatGptTabTransport } from "./chatgpt-connector.js";
 import { createGeminiAdapter, createGeminiTabTransport } from "./gemini-connector.js";
 import { CHATGPT_OUTER_TIMEOUT_MS, providerIdsForMode, timeoutMsForRound } from "./provider-selection.js";
@@ -32,6 +42,12 @@ const summary = document.querySelector("#summary");
 const errorBox = document.querySelector("#error");
 const transcript = document.querySelector("#transcript");
 const form = document.querySelector("#ask");
+const roundtablePrompt = document.querySelector("#roundtable-prompt");
+const roundtableTarget = document.querySelector("#roundtable-target");
+let roundtableController: AbortController | null = null;
+let roundtableBusy = false;
+const groupChatPrompt = document.querySelector("#groupchat-prompt");
+const groupChatBusyProviders = new Set<"chatgpt" | "gemini">();
 
 form?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -42,8 +58,45 @@ document.querySelector("#run-mock")?.addEventListener("click", () => {
   void runRound("mock");
 });
 
+document.querySelector("#groupchat-send")?.addEventListener("click", () => {
+  void sendGroupChatMessage();
+});
+
+document.querySelector("#groupchat-cancel")?.addEventListener("click", () => {
+  if (!session || !isGroupChatSession(session)) return;
+  const cancelled = cancelQueuedGroupChatRequests(session);
+  if (cancelled.ok) {
+    session = cancelled.session;
+    render();
+  }
+});
+
+document.querySelector("#groupchat-resume-chatgpt")?.addEventListener("click", () => {
+  void resumeGroupChat("chatgpt");
+});
+
+document.querySelector("#groupchat-resume-gemini")?.addEventListener("click", () => {
+  void resumeGroupChat("gemini");
+});
+
 document.querySelector("#cross")?.addEventListener("click", () => {
   void runSecondRound();
+});
+
+document.querySelector("#roundtable-start")?.addEventListener("click", () => {
+  void beginRoundtable();
+});
+
+document.querySelector("#roundtable-record")?.addEventListener("click", () => {
+  recordRoundtableInput();
+});
+
+document.querySelector("#roundtable-continue")?.addEventListener("click", () => {
+  void continueRoundtable();
+});
+
+document.querySelector("#roundtable-stop")?.addEventListener("click", () => {
+  roundtableController?.abort();
 });
 
 document.querySelector("#export-md")?.addEventListener("click", () => {
@@ -91,6 +144,10 @@ void validateConnectedTabs();
 
 async function runRound(mode: "mock" | "unimplemented" | "live"): Promise<void> {
   clearError();
+  if (!allowsNewIndependentSession(session) || (session !== null && isGroupChatSession(session))) {
+    showError("当前讨论页已有其他模式记录；请先导出并重新打开讨论页，再开始独立回答。");
+    return;
+  }
   if (!connectionsReady) {
     showError("正在确认连接状态，请稍后再发送。");
     return;
@@ -119,7 +176,7 @@ async function runSecondRound(): Promise<void> {
     showError("正在确认连接状态，请稍后再试。");
     return;
   }
-  if (!session) {
+  if (!session || isGroupChatSession(session)) {
     showError("还没有第一轮记录。");
     return;
   }
@@ -138,8 +195,330 @@ async function runSecondRound(): Promise<void> {
   render();
 }
 
-function selectedAdapters(mode: "mock" | "unimplemented" | "live"): ProviderAdapter[] {
-  return providerIdsForMode(mode, selectedProviderIds(), connectedProviderIds()).map((id) => {
+async function sendGroupChatMessage(): Promise<void> {
+  clearError();
+  if (session && !isGroupChatSession(session)) {
+    showError("当前讨论页已有其他模式记录；请先导出并重新打开讨论页，再开始群聊。");
+    return;
+  }
+  const body = groupChatPrompt instanceof HTMLTextAreaElement ? groupChatPrompt.value : "";
+  const targets = selectedGroupChatTargets();
+  const missing = targets.filter((providerId) => connectedTabs[providerId] === undefined);
+  if (missing.length > 0) {
+    showError(`请先连接：${missing.map(providerName).join("、")}。未记录或发送这条消息。`);
+    return;
+  }
+  const current = session ?? createGroupChatSession("AI 群聊");
+  const added = appendGroupChatMessage(current, body, targets);
+  if (!added.ok) {
+    showError(added.detail);
+    return;
+  }
+  session = added.session;
+  if (groupChatPrompt instanceof HTMLTextAreaElement) groupChatPrompt.value = "";
+  render();
+  await Promise.all(targets.map((providerId) => drainGroupChatProvider(providerId)));
+}
+
+async function resumeGroupChat(providerId: "chatgpt" | "gemini"): Promise<void> {
+  if (!session || !isGroupChatSession(session)) return;
+  const resumed = resumeGroupChatProvider(session, providerId);
+  if (!resumed.ok) {
+    showError(resumed.detail);
+    return;
+  }
+  session = resumed.session;
+  render();
+  await drainGroupChatProvider(providerId);
+}
+
+async function drainGroupChatProvider(providerId: "chatgpt" | "gemini"): Promise<void> {
+  if (groupChatBusyProviders.has(providerId) || !session || !isGroupChatSession(session)) return;
+  if (session.messages.some((message) => message.trust !== "created_by_core")) return;
+  if (!hasRunnableGroupChatRequests(session, providerId)) return;
+  const started = beginGroupChatProviderQueue(session, providerId);
+  if (!started.ok) {
+    showError(started.detail);
+    return;
+  }
+  session = started.session;
+  groupChatBusyProviders.add(providerId);
+  renderGroupChatControls();
+  const snapshot = started.session;
+  try {
+    const result = await runGroupChatProviderQueue(snapshot, providerId, groupChatOptions());
+    if (!result.ok) {
+      showError(result.detail);
+      return;
+    }
+    // Merge only this provider's completed request; the other provider may still be running.
+    session = mergeGroupChatExecution(session ?? snapshot, [result.session], [providerId]);
+    render();
+  } finally {
+    groupChatBusyProviders.delete(providerId);
+    renderGroupChatControls();
+  }
+  if (hasRunnableGroupChatRequests(session, providerId)) await drainGroupChatProvider(providerId);
+}
+
+function groupChatOptions() {
+  const adapters = selectedAdapters("live", connectedProviderIds());
+  const timeoutMsByProvider = Object.fromEntries(adapters.map((adapter) =>
+    [adapter.id, timeoutMsForRound("live", adapter.id)]));
+  return {
+    clock: systemClock(),
+    adapters,
+    timeoutMs: Math.max(
+      CHATGPT_OUTER_TIMEOUT_MS,
+      ...Object.values(timeoutMsByProvider).filter((value): value is number => typeof value === "number"),
+    ),
+    timeoutMsByProvider,
+  };
+}
+
+function selectedGroupChatTargets(): ("chatgpt" | "gemini")[] {
+  const targets: ("chatgpt" | "gemini")[] = [];
+  document.querySelectorAll('input[name="group-target"]:checked').forEach((node) => {
+    if (node instanceof HTMLInputElement && (node.value === "chatgpt" || node.value === "gemini")) {
+      targets.push(node.value);
+    }
+  });
+  return targets;
+}
+
+function hasRunnableGroupChatRequests(current: Session | null, providerId?: "chatgpt" | "gemini"): boolean {
+  if (!current?.groupChatRequests) return false;
+  const paused = new Set(current.groupChatPausedProviders ?? []);
+  return current.groupChatRequests.some((request) => request.status === "queued" &&
+    (!providerId || request.providerId === providerId) && !paused.has(request.providerId));
+}
+
+async function beginRoundtable(): Promise<void> {
+  clearError();
+  if (!connectionsReady || connectedProviderIds().length !== 2) {
+    showError("请先连接 ChatGPT 和 Gemini 的本场专用新对话。没有连接齐全时不会开始发送。");
+    return;
+  }
+  if (session) {
+    showError("当前讨论页已有记录。请先导出并重新打开讨论页，避免覆盖旧记录。");
+    return;
+  }
+  const prompt = roundtablePrompt instanceof HTMLTextAreaElement ? roundtablePrompt.value : "";
+  const options = roundtableOptions();
+  const created = createRoundtableSession(prompt, options);
+  if (!created.ok) {
+    showError(created.detail);
+    return;
+  }
+  session = created.session;
+  if (roundtablePrompt instanceof HTMLTextAreaElement) roundtablePrompt.value = "";
+  render();
+  await sendRoundtableRound(created.session, options);
+}
+
+function recordRoundtableInput(): void {
+  clearError();
+  if (!session || !isRoundtableSession(session)) {
+    showError("请先开始一场圆桌会议。");
+    return;
+  }
+  if (roundtableBusy) {
+    showError("本轮还在进行，等它结束或先停止本场。");
+    return;
+  }
+  const body = roundtablePrompt instanceof HTMLTextAreaElement ? roundtablePrompt.value : "";
+  const added = appendRoundtableUserInput(session, body, selectedRoundtableTarget());
+  if (!added.ok) {
+    showError(added.detail);
+    return;
+  }
+  session = added.session;
+  clearRoundtableDraft();
+  render();
+}
+
+async function continueRoundtable(): Promise<void> {
+  clearError();
+  if (!session || !isRoundtableSession(session)) {
+    showError("还没有可继续的圆桌会议。");
+    return;
+  }
+  if (roundtableBusy) return;
+  let next = session;
+  const body = roundtablePrompt instanceof HTMLTextAreaElement ? roundtablePrompt.value : "";
+  if (body.trim()) {
+    const added = appendRoundtableUserInput(next, body, selectedRoundtableTarget());
+    if (!added.ok) {
+      showError(added.detail);
+      return;
+    }
+    next = added.session;
+    clearRoundtableDraft();
+  } else if (!pendingRoundtableInput(next)) {
+    const added = appendRoundtableUserInput(next, "请继续讨论本场问题。", selectedRoundtableTarget());
+    if (!added.ok) {
+      showError(added.detail);
+      return;
+    }
+    next = added.session;
+    if (roundtableTarget instanceof HTMLSelectElement) roundtableTarget.value = "";
+  }
+  const pending = pendingRoundtableInput(next);
+  if (!pending) {
+    showError("当前没有可推进的用户发言。");
+    return;
+  }
+  const targets: ConnectedProviderId[] = pending.directedTo === "chatgpt" || pending.directedTo === "gemini"
+    ? [pending.directedTo]
+    : ["chatgpt", "gemini"];
+  const missing = targets.filter((providerId) => connectedTabs[providerId] === undefined);
+  if (missing.length > 0) {
+    session = next;
+    render();
+    showError(`请先重新连接：${missing.map(providerName).join("、")}。本轮补充已保留，尚未发送。`);
+    return;
+  }
+  session = next;
+  render();
+  await sendRoundtableRound(next, roundtableOptions());
+}
+
+async function sendRoundtableRound(current: Session, options: ReturnType<typeof roundtableOptions>): Promise<void> {
+  if (roundtableBusy) return;
+  const controller = new AbortController();
+  roundtableController = controller;
+  roundtableBusy = true;
+  renderRoundtableControls();
+  try {
+    const result = await runRoundtableRound(current, { ...options, signal: controller.signal });
+    session = result.session ?? current;
+    if (!result.ok) showError(result.detail);
+    render();
+  } finally {
+    if (roundtableController === controller) roundtableController = null;
+    roundtableBusy = false;
+    renderRoundtableControls();
+  }
+}
+
+function clearRoundtableDraft(): void {
+  if (roundtablePrompt instanceof HTMLTextAreaElement) roundtablePrompt.value = "";
+  if (roundtableTarget instanceof HTMLSelectElement) roundtableTarget.value = "";
+}
+
+function selectedRoundtableTarget(): "chatgpt" | "gemini" | undefined {
+  if (roundtableTarget instanceof HTMLSelectElement &&
+      (roundtableTarget.value === "chatgpt" || roundtableTarget.value === "gemini")) {
+    return roundtableTarget.value;
+  }
+  return undefined;
+}
+
+function pendingRoundtableInput(current: Session): Session["messages"][number] | null {
+  const completed = current.messages.reduce((round, message) =>
+    message.phase === "roundtable" && message.role !== "user" ? Math.max(round, message.round) : round, 0);
+  return current.messages.find((message) => message.phase === "roundtable" &&
+    message.role === "user" && message.round === completed + 1) ?? null;
+}
+
+function isRoundtableSession(current: Session): boolean {
+  return current.messages.some((message) => message.phase === "roundtable");
+}
+
+function isGroupChatSession(current: Session): boolean {
+  return current.messages.some((message) => message.phase === "groupchat");
+}
+
+function roundtableOptions() {
+  const adapters = selectedAdapters("live", connectedProviderIds());
+  const timeoutMsByProvider = Object.fromEntries(adapters.map((adapter) =>
+    [adapter.id, timeoutMsForRound("live", adapter.id)]));
+  return {
+    clock: systemClock(),
+    adapters,
+    timeoutMs: Math.max(
+      CHATGPT_OUTER_TIMEOUT_MS,
+      ...Object.values(timeoutMsByProvider).filter((value): value is number => typeof value === "number"),
+    ),
+    timeoutMsByProvider,
+    maxRounds: MAX_ALLOWED_ROUNDS,
+  };
+}
+
+function renderRoundtableControls(): void {
+  const start = document.querySelector<HTMLButtonElement>("#roundtable-start");
+  const record = document.querySelector<HTMLButtonElement>("#roundtable-record");
+  const proceed = document.querySelector<HTMLButtonElement>("#roundtable-continue");
+  const stop = document.querySelector<HTMLButtonElement>("#roundtable-stop");
+  const status = document.querySelector("#roundtable-status");
+  const current = session;
+  const roundtable = current !== null && isRoundtableSession(current);
+  const failed = current?.messages.some((message) =>
+    message.phase === "roundtable" && message.role !== "user" && message.status !== "complete") ?? false;
+  const completed = current?.messages.reduce((round, message) =>
+    message.phase === "roundtable" && message.role !== "user" ? Math.max(round, message.round) : round, 0) ?? 0;
+  const pending = roundtable && current ? pendingRoundtableInput(current) : null;
+  const fullRoundComplete = roundtable && current !== null && completed > 0 && !pending && !failed;
+
+  if (start) start.disabled = !connectionsReady || connectedProviderIds().length !== 2 || roundtableBusy || current !== null;
+  if (record) record.disabled = !fullRoundComplete || roundtableBusy || completed >= (current?.maxRounds ?? 0);
+  if (proceed) proceed.disabled = !roundtable || roundtableBusy || failed || completed >= (current?.maxRounds ?? 0);
+  if (stop) stop.disabled = !roundtableBusy;
+  if (roundtableTarget instanceof HTMLSelectElement) {
+    roundtableTarget.disabled = roundtableBusy || !current || !canSelectNextRoundTarget(current);
+  }
+
+  if (!status) return;
+  if (roundtableBusy) status.textContent = "本轮发送中。停止会停止本场推进，但不保证撤销网页已提交的生成。";
+  else if (failed) status.textContent = "本场已停止；失败结果留空且不会自动重发。请先导出记录。";
+  else if (!roundtable) status.textContent = current
+    ? "当前有其他会话记录；请先导出并重新打开讨论页，再开始新圆桌。"
+    : "连接两家专用新对话后，可以开始本场圆桌；单家点名从第二轮开始。";
+  else if (pending) status.textContent = `第 ${pending.round} 轮的插话已记录，点击“继续本场”才会发送。`;
+  else if (current && completed >= current.maxRounds) status.textContent = `本场已达到 ${current.maxRounds} 轮上限。`;
+  else status.textContent = `第 ${completed} 轮已完成；可记录插话，或直接点“继续本场”。`;
+}
+
+function renderGroupChatControls(): void {
+  const current = session;
+  const isGroupChat = current !== null && isGroupChatSession(current);
+  const unverified = current?.messages.some((message) => message.trust !== "created_by_core") ?? false;
+  const status = document.querySelector("#groupchat-status");
+  const send = document.querySelector<HTMLButtonElement>("#groupchat-send");
+  const cancel = document.querySelector<HTMLButtonElement>("#groupchat-cancel");
+  const paused = new Set(current?.groupChatPausedProviders ?? []);
+  if (send) send.disabled = current !== null && (!isGroupChat || unverified);
+  if (cancel) cancel.disabled = !isGroupChat || unverified || !(current?.groupChatRequests ?? []).some((request) => request.status === "queued");
+  for (const providerId of ["chatgpt", "gemini"] as const) {
+    const button = document.querySelector<HTMLButtonElement>(`#groupchat-resume-${providerId}`);
+    if (button) button.disabled = !isGroupChat || unverified || groupChatBusyProviders.has(providerId) || !paused.has(providerId);
+  }
+  if (!status) return;
+  if (!isGroupChat) {
+    status.textContent = current ? "当前讨论页已有其他模式记录；请导出并重新打开后再开始群聊。" : "群聊尚未开始。";
+    return;
+  }
+  if (unverified) {
+    status.textContent = "这是导入的未验证记录；群聊队列不会自动续发。";
+    return;
+  }
+  const requests = current.groupChatRequests ?? [];
+  const queued = requests.filter((request) => request.status === "queued").length;
+  const failed = requests.filter((request) => request.status === "failed" || request.status === "unknown").length;
+  if (groupChatBusyProviders.size > 0) {
+    const busy = [...groupChatBusyProviders].map(providerName).join("、");
+    status.textContent = `${busy} 正在处理；另一家队列不会被阻塞。`;
+  }
+  else if (failed > 0) status.textContent = `有 ${failed} 条失败或未知结果；对应模型已暂停，不会自动重发。`;
+  else if (queued > 0) status.textContent = `还有 ${queued} 条请求排队。`;
+  else status.textContent = "群聊已暂停，等待下一条消息或用户恢复队列。";
+}
+
+function selectedAdapters(
+  mode: "mock" | "unimplemented" | "live",
+  checked = selectedProviderIds(),
+): ProviderAdapter[] {
+  return providerIdsForMode(mode, checked, connectedProviderIds()).map((id) => {
     if (mode === "mock") {
       return mockAdapter(id);
     }
@@ -227,7 +606,7 @@ function showConnectionState(): void {
     } else if (providers.length === 1) {
       connectionDetail = "本轮只发送到当前 ChatGPT 标签页，不会发送到其他模型。刷新或关闭标签页后需要重新连接。";
     } else if (providers.length === 2) {
-      connectionDetail = "本轮会并行发送到已连接的 ChatGPT 与 Gemini 标签页。Gemini 提问会附一次性校验标记；两家分别按自己的规则认领回复。刷新或关闭对应标签页后，该家连接会断开。";
+      connectionDetail = "普通模式并行发送到已连接的两家；圆桌模式按 ChatGPT → Gemini 依次发送。Gemini 会附一次性校验标记；刷新或关闭对应标签页后，该家连接会断开。";
     } else if (disconnected.length > 0) {
       connectionDetail = `${disconnected.map(providerName).join("、")}标签页已刷新或关闭，请重新点击扩展连接。`;
     }
@@ -264,6 +643,18 @@ function showConnectionState(): void {
     grok.disabled = providers.length > 0;
     if (providers.length > 0) grok.checked = false;
   }
+  for (const providerId of ["chatgpt", "gemini"] as const) {
+    const checkbox = document.querySelector<HTMLInputElement>(`input[name="group-target"][value="${providerId}"]`);
+    const label = document.querySelector(`#group-${providerId}-label`);
+    const connected = connectedTabs[providerId] !== undefined;
+    if (checkbox) {
+      checkbox.disabled = !connected || (session !== null && !isGroupChatSession(session));
+      if (!connected) checkbox.checked = false;
+    }
+    if (label) label.textContent = `@${providerName(providerId)}（${connected ? "已临时连接" : disconnectedProviders.has(providerId) ? "连接已断开" : "未接入"}）`;
+  }
+  renderRoundtableControls();
+  renderGroupChatControls();
 }
 
 async function attachConnection(request: ConnectionRequest): Promise<ConnectionRejectionCode | null> {
@@ -363,6 +754,8 @@ function render(): void {
   transcript.replaceChildren();
   if (!session) {
     summary.textContent = "";
+    renderRoundtableControls();
+    renderGroupChatControls();
     return;
   }
   summary.textContent = summarizeSession(session);
@@ -374,7 +767,11 @@ function render(): void {
     article.dataset.headline = headline;
     const title = document.createElement("h3");
     const who = message.providerId ?? "用户";
-    title.textContent = `第 ${message.round} 轮 · ${who} · ${headline}`;
+    const phase = message.phase === "roundtable" ? "圆桌 · " : message.phase === "groupchat" ? "群聊 · " : "";
+    const direction = message.directedTo ? `（@${providerLabel(message.directedTo)}）` : "";
+    const targets = message.targetProviders?.length ? `（@${message.targetProviders.map(providerLabel).join("、")}）` : "";
+    title.textContent = `第 ${message.round} 轮 · ${phase}${who} · ${headline}${direction}`;
+    if (targets) title.textContent += targets;
     const body = document.createElement("pre");
     body.textContent = message.body || message.errorMessage || "（无正文）";
     article.append(title, body);
@@ -389,6 +786,8 @@ function render(): void {
     }
     transcript.append(article);
   }
+  renderRoundtableControls();
+  renderGroupChatControls();
 }
 
 function downloadCurrent(kind: "markdown" | "jsonl"): void {

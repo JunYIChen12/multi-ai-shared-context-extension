@@ -26,6 +26,43 @@
           <button id="cross" type="button">第二轮交叉讨论</button>
         </div>
       </form>
+      <section aria-labelledby="groupchat-heading">
+        <h2 id="groupchat-heading">AI 群聊</h2>
+        <p>只有点名的模型会收到这条消息；不点名只留在本地。两家各自排队，失败或未知只暂停对应一家。</p>
+        <label for="groupchat-prompt">群聊消息</label>
+        <textarea id="groupchat-prompt" rows="4" placeholder="输入消息，然后勾选 @ChatGPT 或 @Gemini；不勾选不会发送。"></textarea>
+        <fieldset>
+          <legend>点名目标</legend>
+          <label><input type="checkbox" name="group-target" value="chatgpt" /><span id="group-chatgpt-label">@ChatGPT（未接入）</span></label>
+          <label><input type="checkbox" name="group-target" value="gemini" /><span id="group-gemini-label">@Gemini（未接入）</span></label>
+        </fieldset>
+        <div class="actions">
+          <button id="groupchat-send" type="button">发送群聊消息</button>
+          <button id="groupchat-cancel" type="button">取消尚未执行请求</button>
+          <button id="groupchat-resume-chatgpt" type="button" disabled>恢复 ChatGPT 队列</button>
+          <button id="groupchat-resume-gemini" type="button" disabled>恢复 Gemini 队列</button>
+        </div>
+        <p id="groupchat-status" aria-live="polite">群聊尚未开始。</p>
+      </section>
+      <section aria-labelledby="roundtable-heading">
+        <h2 id="roundtable-heading">圆桌讨论</h2>
+        <p>请先连接 ChatGPT 和 Gemini 的本场专用新对话。开始后按 ChatGPT → Gemini 发言；每轮结束会暂停，不自动开启下一轮。</p>
+        <label for="roundtable-prompt">本场问题或新补充</label>
+        <textarea id="roundtable-prompt" rows="4" placeholder="写本场问题，或写一条准备让模型看到的新补充。"></textarea>
+        <label for="roundtable-target">可选：本轮只请谁回答</label>
+        <select id="roundtable-target" disabled>
+          <option value="">两家按顺序</option>
+          <option value="chatgpt">@ChatGPT 单独回答</option>
+          <option value="gemini">@Gemini 单独回答</option>
+        </select>
+        <div class="actions">
+          <button id="roundtable-start" type="button">开始圆桌（发送第一轮）</button>
+          <button id="roundtable-record" type="button">记录插话（不发送）</button>
+          <button id="roundtable-continue" type="button">继续本场</button>
+          <button id="roundtable-stop" type="button" disabled>停止本场</button>
+        </div>
+        <p id="roundtable-status" aria-live="polite">连接两家专用新对话后，可以开始本场圆桌。</p>
+      </section>
       <p id="summary" aria-live="polite"></p>
       <p id="error" role="alert"></p>
       <section id="transcript" aria-live="polite"></section>

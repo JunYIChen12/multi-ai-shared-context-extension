@@ -1,4 +1,4 @@
-import type { ProviderId, SessionMessage } from "./types.js";
+import type { ProviderId, SessionMessage, TurnPhase } from "./types.js";
 
 const LABELS: Record<ProviderId, string> = {
   chatgpt: "ChatGPT",
@@ -12,8 +12,8 @@ export function providerLabel(id: ProviderId): string {
 
 export const MOCK_PREFIX = "[MOCK]";
 
-export function mockBody(id: ProviderId, phase: "independent" | "cross_review", injectionCount: number): string {
-  const phaseText = phase === "independent" ? "独立回答演示" : "交叉讨论演示";
+export function mockBody(id: ProviderId, phase: TurnPhase, injectionCount: number): string {
+  const phaseText = phase === "independent" ? "独立回答演示" : phase === "cross_review" ? "交叉讨论演示" : phase === "roundtable" ? "圆桌讨论演示" : "AI 群聊演示";
   return `${MOCK_PREFIX} 演示数据，不是 ${providerLabel(id)} 的真实回复，不能当作模型观点。${phaseText}。注入条数=${injectionCount}。`;
 }
 
@@ -47,6 +47,12 @@ export function outcomeHeadline(message: SessionMessage): string {
   if (message.errorCode === "unknown") {
     return "未知";
   }
+  if (message.phase === "groupchat" &&
+      (message.status === "unknown" || message.status === "timeout" ||
+        message.errorCode === "connection_lost" || message.errorCode === "ambiguous_turn" ||
+        message.errorCode === "page_error" || message.errorCode === "timeout")) {
+    return "未知";
+  }
   if (message.errorCode === "navigation") {
     return "会话已隔离";
   }
@@ -69,7 +75,8 @@ export function summarizeSession(session: { messages: SessionMessage[] }): strin
   const failed = session.messages.filter(
     (message) => message.status === "failed" || message.status === "timeout",
   ).length;
-  return `可注入观点 ${opinions} 条；MOCK 记录 ${mocks} 条；未接入 ${notConnected} 条；失败或超时 ${failed} 条。MOCK 和未接入都不是真实模型回答。`;
+  const unknown = session.messages.filter((message) => message.status === "unknown").length;
+  return `可注入观点 ${opinions} 条；MOCK 记录 ${mocks} 条；未接入 ${notConnected} 条；失败或超时 ${failed} 条；未知 ${unknown} 条。MOCK 和未接入都不是真实模型回答。`;
 }
 
 function statusText(status: SessionMessage["status"]): string {
@@ -78,6 +85,8 @@ function statusText(status: SessionMessage["status"]): string {
       return "完成";
     case "failed":
       return "失败";
+    case "unknown":
+      return "未知";
     case "timeout":
       return "超时";
     case "not_connected":

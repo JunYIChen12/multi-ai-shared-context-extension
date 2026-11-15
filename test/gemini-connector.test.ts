@@ -85,6 +85,83 @@ describe("Gemini 单标签页连接", () => {
     assert.equal(request.userPrompt, "只回复 GEMINI_LIVE_OK");
   });
 
+  it("圆桌请求把署名原话增量放在当前用户发言前，并保留本次校验标记", async () => {
+    const sent: GeminiTabMessage[] = [];
+    const response = await createGeminiAdapter(createGeminiTabTransport(42, {
+      async sendToTab(_tabId, message) {
+        sent.push(message);
+        return { ok: true, body: "GEMINI_ROUND_2_OK" };
+      },
+    })).respond({
+      ...providerRequest(),
+      phase: "roundtable",
+      round: 2,
+      userPrompt: "请核对边界",
+      meetingContext: [
+        { messageId: "c1", speakerId: "chatgpt", round: 1, phase: "roundtable", body: "ChatGPT 完整原话" },
+      ],
+    });
+    assert.equal(response.status, "complete");
+    const ask = sent[0];
+    assert.equal(ask?.type, "ask");
+    if (ask?.type === "ask") {
+      assert.equal(ask.prompt, `【ChatGPT · 第 1 轮完整原话】\nChatGPT 完整原话\n\n【用户 · 第 2 轮新发言】\n请核对边界\n\n[本次校验: ${ask.requestId}]`);
+    }
+  });
+
+  it("群聊请求接受完整上下文，超限时仍在触碰网页前停止", async () => {
+    const sent: GeminiTabMessage[] = [];
+    const response = await createGeminiAdapter({
+      async send(message) {
+        sent.push(message);
+        return { ok: true, body: "GEMINI_GROUP_OK" };
+      },
+    }).respond({
+      ...providerRequest(),
+      phase: "groupchat",
+      round: 2,
+      userPrompt: "当前问题",
+      meetingContext: [
+        { messageId: "c1", speakerId: "chatgpt", round: 1, phase: "groupchat", body: "ChatGPT 完整回答" },
+      ],
+    });
+    assert.equal(response.status, "complete");
+    const ask = sent[0];
+    assert.equal(ask?.type, "ask");
+    if (ask?.type === "ask") assert.match(ask.prompt, /ChatGPT 完整回答[\s\S]*当前问题[\s\S]*\[本次校验:/);
+
+    let sends = 0;
+    const tooLarge = await createGeminiAdapter({ async send() { sends += 1; return { ok: true, body: "不应发送" }; } }).respond({
+      ...providerRequest(),
+      phase: "groupchat",
+      userPrompt: "U".repeat(20_000),
+    });
+    assert.equal(tooLarge.status, "failed");
+    assert.equal(tooLarge.error?.code, "prompt_too_large");
+    assert.equal(sends, 0);
+  });
+
+  it("圆桌完整内容含校验标记后超限时不触碰网页", async () => {
+    let sends = 0;
+    const response = await createGeminiAdapter({
+      async send() {
+        sends += 1;
+        return { ok: true, body: "不应发送" };
+      },
+    }).respond({
+      ...providerRequest(),
+      phase: "roundtable",
+      userPrompt: "U".repeat(19_980),
+      meetingContext: [
+        { messageId: "c1", speakerId: "chatgpt", round: 1, phase: "roundtable", body: "C" },
+      ],
+    });
+    assert.equal(response.status, "failed");
+    assert.equal(response.body, "");
+    assert.equal(response.error?.code, "prompt_too_large");
+    assert.equal(sends, 0);
+  });
+
   it("附标记后超过长度上限时不触碰网页输入框", async () => {
     const request = { ...providerRequest(), userPrompt: "甲".repeat(20_000) };
     let read = false;
@@ -99,7 +176,7 @@ describe("Gemini 单标签页连接", () => {
     });
     const result = await adapter.respond(request);
     assert.equal(result.status, "failed");
-    assert.equal(result.error?.code, "invalid_request");
+    assert.equal(result.error?.code, "prompt_too_large");
     assert.equal(read, false);
     assert.equal(request.userPrompt.length, 20_000);
   });
