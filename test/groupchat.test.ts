@@ -121,6 +121,65 @@ describe("群聊核心调度", () => {
     assert.equal(merged.messages.some((message) => message.body === "第二条" && message.requestId), false);
   });
 
+  it("取消双目标消息中一家的排队请求，保留另一家的成功回执且后续不重复补发", async () => {
+    let releaseGemini!: () => void;
+    let geminiStarted!: () => void;
+    const geminiGate = new Promise<void>((resolve) => { releaseGemini = resolve; });
+    const geminiReady = new Promise<void>((resolve) => { geminiStarted = resolve; });
+    const geminiCalls: ProviderRequest[] = [];
+    const gemini = adapter("gemini", geminiCalls, async (request) => {
+      if (request.userPrompt === "双目标原文") {
+        geminiStarted();
+        await geminiGate;
+        return { mode: "live", status: "complete", body: "GEMINI_FIRST_OK" };
+      }
+      return { mode: "live", status: "complete", body: "GEMINI_NEXT_OK" };
+    });
+    let session = createGroupChatSession("双目标取消回执", createTestClock());
+    session = append(session, "双目标原文", ["chatgpt", "gemini"]);
+    const originalMessageId = session.messages.find((message) => message.body === "双目标原文")?.id;
+    assert.ok(originalMessageId);
+
+    const geminiPrepared = beginGroupChatProviderQueue(session, "gemini", createTestClock());
+    assert.equal(geminiPrepared.ok, true);
+    if (!geminiPrepared.ok) return;
+    assert.equal(geminiPrepared.session.groupChatRequests?.find((request) => request.providerId === "chatgpt")?.status, "queued");
+
+    const geminiRun = runGroupChatProviderQueue(geminiPrepared.session, "gemini", {
+      clock: createTestClock(), adapters: [gemini], timeoutMs: 1000,
+    });
+    await geminiReady;
+    const cancelled = cancelQueuedGroupChatRequests(geminiPrepared.session, "chatgpt");
+    assert.equal(cancelled.ok, true);
+    if (!cancelled.ok) return;
+    assert.equal(cancelled.session.groupChatRequests?.find((request) => request.providerId === "chatgpt")?.status, "cancelled");
+
+    releaseGemini();
+    const finishedGemini = await geminiRun;
+    assert.equal(finishedGemini.ok, true);
+    if (!finishedGemini.ok) return;
+    const merged = mergeGroupChatExecution(cancelled.session, [finishedGemini.session], ["gemini"]);
+
+    assert.equal(merged.groupChatRequests?.find((request) => request.providerId === "chatgpt")?.status, "cancelled");
+    assert.equal(merged.groupChatRequests?.find((request) => request.providerId === "gemini")?.status, "complete");
+    assert.equal(merged.messages.find((message) => message.requestId === finishedGemini.session.groupChatRequests?.find((request) => request.providerId === "gemini")?.id)?.body, "GEMINI_FIRST_OK");
+    assert.ok(merged.deliveryReceipts?.some((receipt) => receipt.messageId === originalMessageId && receipt.providerId === "gemini" && (receipt.state ?? "confirmed") === "confirmed"));
+    assert.equal(merged.messages.some((message) => message.requestId === cancelled.session.groupChatRequests?.find((request) => request.providerId === "chatgpt")?.id), false);
+
+    const followup = appendGroupChatMessage(merged, "Gemini 后续问题", ["gemini"], createTestClock());
+    assert.equal(followup.ok, true);
+    if (!followup.ok) return;
+    const followupRequest = followup.session.groupChatRequests?.find((request) => request.providerId === "gemini" && request.status === "queued");
+    assert.ok(followupRequest);
+    assert.equal(followupRequest?.contextMessageIds.includes(originalMessageId), false);
+    const followupRun = await runGroupChatProviderQueue(followup.session, "gemini", {
+      clock: createTestClock(), adapters: [gemini], timeoutMs: 1000,
+    });
+    assert.equal(followupRun.ok, true);
+    assert.equal(geminiCalls.length, 2);
+    assert.equal(geminiCalls[1]?.meetingContext?.some((item) => item.messageId === originalMessageId || item.body === "双目标原文"), false);
+  });
+
   it("群聊未知结果在记录、界面标题和导出中都保持未知，真正失败仍是失败", async () => {
     const unknown = adapter("chatgpt", [], async () => ({
       mode: "live", status: "failed", body: "", error: { code: "connection_lost", message: "连接已断开" },

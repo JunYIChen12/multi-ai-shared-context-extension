@@ -199,10 +199,10 @@ export function mergeGroupChatExecution(
   const cancelledRequestIds = new Set(
     (merged.groupChatRequests ?? []).filter((request) => request.status === "cancelled").map((request) => request.id),
   );
-  const cancelledMessageIds = new Set(
+  const cancelledReceiptKeys = new Set(
     (merged.groupChatRequests ?? [])
       .filter((request) => cancelledRequestIds.has(request.id))
-      .map((request) => request.messageId),
+      .map((request) => receiptKey(request)),
   );
   const providerScope = executedProviders ? new Set(executedProviders) : null;
   const receiptByKey = new Map((merged.deliveryReceipts ?? []).map((receipt) => [receiptKey(receipt), receipt]));
@@ -226,7 +226,7 @@ export function mergeGroupChatExecution(
     }
     for (const receipt of run.deliveryReceipts ?? []) {
       if (providerScope && !providerScope.has(receipt.providerId)) continue;
-      if (!cancelledMessageIds.has(receipt.messageId)) receiptByKey.set(receiptKey(receipt), { ...receipt });
+      if (!cancelledReceiptKeys.has(receiptKey(receipt))) receiptByKey.set(receiptKey(receipt), { ...receipt });
     }
     for (const providerId of run.groupChatPausedProviders ?? []) {
       if (!providerScope || providerScope.has(providerId)) paused.add(providerId);
