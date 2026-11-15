@@ -12,7 +12,10 @@ export type {
   AdapterMode,
   Clock,
   ContextSelection,
+  DeliveryState,
   DeliveryReceipt,
+  GroupChatRequest,
+  GroupChatRequestStatus,
   Injection,
   MeetingContextItem,
   MessageStatus,
@@ -51,5 +54,16 @@ export {
 export { assertExtensionManifestSafe, extensionManifestErrors } from "./manifest-policy.js";
 export { callAdapter, contractViolation, createSession, runCrossReview, runIndependentRound } from "./orchestrate.js";
 export { appendRoundtableUserInput, createRoundtableSession, runRoundtableRound } from "./roundtable.js";
+export {
+  appendGroupChatMessage,
+  beginGroupChatProviderQueue,
+  cancelQueuedGroupChatRequests,
+  createGroupChatSession,
+  mergeGroupChatExecution,
+  resumeGroupChatProvider,
+  runGroupChatProviderQueue,
+  runGroupChatQueues,
+} from "./groupchat.js";
+export type { GroupChatOptions } from "./groupchat.js";
 export { adaptersById, defaultAdapters, mockAdapter, mockAdapters, unimplementedAdapter } from "./providers.js";
 export { exportSession, parseSessionJsonl, sessionToJsonl, sessionToMarkdown } from "./persist.js";

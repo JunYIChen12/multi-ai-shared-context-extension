@@ -151,6 +151,29 @@ describe("ChatGPT 连接器协议", () => {
     assert.equal(asks[1]?.prompt.startsWith("【用户 · 第 2 轮新发言】\n"), true);
   });
 
+  it("群聊请求只发送快照中的完整上下文，并复用圆桌发送前校验", async () => {
+    let sentPrompt = "";
+    let roundtablePrompt = false;
+    const response = await createChatGptAdapter({
+      async send(message) {
+        sentPrompt = message.prompt;
+        roundtablePrompt = message.roundtablePrompt === true;
+        return { ok: true, body: "CHATGPT_GROUP_OK" };
+      },
+    }).respond({
+      ...request,
+      phase: "groupchat",
+      round: 3,
+      userPrompt: "当前问题",
+      meetingContext: [
+        { messageId: "g1", speakerId: "gemini", round: 2, phase: "groupchat", body: "Gemini 完整回答" },
+      ],
+    });
+    assert.equal(response.status, "complete");
+    assert.equal(roundtablePrompt, true);
+    assert.equal(sentPrompt, "【Gemini · 第 2 轮完整原话】\nGemini 完整回答\n\n【用户 · 第 3 轮新发言】\n当前问题");
+  });
+
   it("完整圆桌内容超限时在发送到标签页前失败，不截断", async () => {
     let sends = 0;
     const response = await createChatGptAdapter({

@@ -26,6 +26,24 @@
           <button id="cross" type="button">第二轮交叉讨论</button>
         </div>
       </form>
+      <section aria-labelledby="groupchat-heading">
+        <h2 id="groupchat-heading">AI 群聊</h2>
+        <p>只有点名的模型会收到这条消息；不点名只留在本地。两家各自排队，失败或未知只暂停对应一家。</p>
+        <label for="groupchat-prompt">群聊消息</label>
+        <textarea id="groupchat-prompt" rows="4" placeholder="输入消息，然后勾选 @ChatGPT 或 @Gemini；不勾选不会发送。"></textarea>
+        <fieldset>
+          <legend>点名目标</legend>
+          <label><input type="checkbox" name="group-target" value="chatgpt" /><span id="group-chatgpt-label">@ChatGPT（未接入）</span></label>
+          <label><input type="checkbox" name="group-target" value="gemini" /><span id="group-gemini-label">@Gemini（未接入）</span></label>
+        </fieldset>
+        <div class="actions">
+          <button id="groupchat-send" type="button">发送群聊消息</button>
+          <button id="groupchat-cancel" type="button">取消尚未执行请求</button>
+          <button id="groupchat-resume-chatgpt" type="button" disabled>恢复 ChatGPT 队列</button>
+          <button id="groupchat-resume-gemini" type="button" disabled>恢复 Gemini 队列</button>
+        </div>
+        <p id="groupchat-status" aria-live="polite">群聊尚未开始。</p>
+      </section>
       <section aria-labelledby="roundtable-heading">
         <h2 id="roundtable-heading">圆桌讨论</h2>
         <p>请先连接 ChatGPT 和 Gemini 的本场专用新对话。开始后按 ChatGPT → Gemini 发言；每轮结束会暂停，不自动开启下一轮。</p>

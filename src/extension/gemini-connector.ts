@@ -88,8 +88,8 @@ export function createGeminiAdapter(transport: GeminiTransport): ProviderAdapter
     id: "gemini",
     mode: "live",
     async respond(request, context): Promise<ProviderResponse> {
-      if (request.phase !== "independent" && request.phase !== "roundtable") {
-        return failed("unsupported_phase", "Gemini 仅支持独立回答或已批准的圆桌讨论");
+      if (request.phase !== "independent" && request.phase !== "roundtable" && request.phase !== "groupchat") {
+        return failed("unsupported_phase", "Gemini 仅支持独立回答、圆桌讨论或群聊");
       }
       const signal = context?.signal;
       if (signal?.aborted) {
@@ -197,7 +197,7 @@ export async function connectActiveGeminiTab(port: GeminiConnectionPort): Promis
 
 function toAskRequest(request: ProviderRequest): GeminiAskRequest {
   const requestId = crypto.randomUUID();
-  const content = request.phase === "roundtable"
+  const content = request.phase === "roundtable" || request.phase === "groupchat"
     ? formatRoundtablePrompt(request.userPrompt, request.round, request.meetingContext ?? [])
     : request.userPrompt;
   return {

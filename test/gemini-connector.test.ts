@@ -109,6 +109,38 @@ describe("Gemini 单标签页连接", () => {
     }
   });
 
+  it("群聊请求接受完整上下文，超限时仍在触碰网页前停止", async () => {
+    const sent: GeminiTabMessage[] = [];
+    const response = await createGeminiAdapter({
+      async send(message) {
+        sent.push(message);
+        return { ok: true, body: "GEMINI_GROUP_OK" };
+      },
+    }).respond({
+      ...providerRequest(),
+      phase: "groupchat",
+      round: 2,
+      userPrompt: "当前问题",
+      meetingContext: [
+        { messageId: "c1", speakerId: "chatgpt", round: 1, phase: "groupchat", body: "ChatGPT 完整回答" },
+      ],
+    });
+    assert.equal(response.status, "complete");
+    const ask = sent[0];
+    assert.equal(ask?.type, "ask");
+    if (ask?.type === "ask") assert.match(ask.prompt, /ChatGPT 完整回答[\s\S]*当前问题[\s\S]*\[本次校验:/);
+
+    let sends = 0;
+    const tooLarge = await createGeminiAdapter({ async send() { sends += 1; return { ok: true, body: "不应发送" }; } }).respond({
+      ...providerRequest(),
+      phase: "groupchat",
+      userPrompt: "U".repeat(20_000),
+    });
+    assert.equal(tooLarge.status, "failed");
+    assert.equal(tooLarge.error?.code, "prompt_too_large");
+    assert.equal(sends, 0);
+  });
+
   it("圆桌完整内容含校验标记后超限时不触碰网页", async () => {
     let sends = 0;
     const response = await createGeminiAdapter({
