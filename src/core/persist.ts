@@ -461,7 +461,7 @@ function readMessage(
   const phase = expectEnum(raw.phase, ["independent", "cross_review", "roundtable", "groupchat"] as const, lineNumber, "phase", errors);
   const status = expectEnum(
     raw.status,
-    ["complete", "failed", "timeout", "not_connected", "cancelled"] as const,
+    ["complete", "failed", "unknown", "timeout", "not_connected", "cancelled"] as const,
     lineNumber,
     "status",
     errors,

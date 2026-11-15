@@ -3,11 +3,15 @@ import { describe, it } from "node:test";
 import { createTestClock } from "../src/core/clock.js";
 import {
   appendGroupChatMessage,
+  beginGroupChatProviderQueue,
   cancelQueuedGroupChatRequests,
   createGroupChatSession,
+  mergeGroupChatExecution,
   resumeGroupChatProvider,
+  runGroupChatProviderQueue,
   runGroupChatQueues,
 } from "../src/core/groupchat.js";
+import { outcomeHeadline } from "../src/core/labels.js";
 import { exportSession, parseSessionJsonl } from "../src/core/persist.js";
 import type { ProviderAdapter, ProviderRequest } from "../src/core/types.js";
 
@@ -35,6 +39,125 @@ function append(session: Parameters<typeof appendGroupChatMessage>[0], body: str
 }
 
 describe("群聊核心调度", () => {
+  it("两家队列可以独立完成，不互相等待", async () => {
+    let releaseChatGpt!: () => void;
+    let chatGptStarted!: () => void;
+    const chatGptGate = new Promise<void>((resolve) => { releaseChatGpt = resolve; });
+    const chatGptReady = new Promise<void>((resolve) => { chatGptStarted = resolve; });
+    const chatGptCalls: ProviderRequest[] = [];
+    const geminiCalls: ProviderRequest[] = [];
+    const chatgpt = adapter("chatgpt", chatGptCalls, async () => {
+      chatGptStarted();
+      await chatGptGate;
+      return { mode: "live", status: "complete", body: "CHATGPT_SLOW" };
+    });
+    const gemini = adapter("gemini", geminiCalls, async () => ({ mode: "live", status: "complete", body: "GEMINI_FAST" }));
+    let session = createGroupChatSession("独立队列", createTestClock());
+    session = append(session, "同时点名两家", ["chatgpt", "gemini"]);
+    const chatPrepared = beginGroupChatProviderQueue(session, "chatgpt", createTestClock());
+    const gemPrepared = beginGroupChatProviderQueue(session, "gemini", createTestClock());
+    assert.equal(chatPrepared.ok, true);
+    assert.equal(gemPrepared.ok, true);
+    if (!chatPrepared.ok || !gemPrepared.ok) return;
+
+    const chatRun = runGroupChatProviderQueue(chatPrepared.session, "chatgpt", {
+      clock: createTestClock(), adapters: [chatgpt], timeoutMs: 1000,
+    });
+    await chatGptReady;
+    const gemRun = await runGroupChatProviderQueue(gemPrepared.session, "gemini", {
+      clock: createTestClock(), adapters: [gemini], timeoutMs: 1000,
+    });
+    assert.equal(gemRun.ok, true);
+    if (gemRun.ok) assert.equal(gemRun.session.messages.at(-1)?.body, "GEMINI_FAST");
+    assert.equal(chatGptCalls.length, 1);
+    assert.equal(geminiCalls.length, 1);
+
+    releaseChatGpt();
+    const finishedChat = await chatRun;
+    assert.equal(finishedChat.ok, true);
+    if (finishedChat.ok) {
+      assert.equal(finishedChat.session.messages.at(-1)?.body, "CHATGPT_SLOW");
+      if (gemRun.ok) {
+        const afterChat = mergeGroupChatExecution(session, [finishedChat.session], ["chatgpt"]);
+        const afterGemini = mergeGroupChatExecution(afterChat, [gemRun.session], ["gemini"]);
+        assert.equal(afterGemini.groupChatRequests?.find((request) => request.providerId === "chatgpt")?.status, "complete");
+        assert.equal(afterGemini.groupChatRequests?.find((request) => request.providerId === "gemini")?.status, "complete");
+      }
+    }
+  });
+
+  it("运行一家时可以取消同家尚未提交的后续请求，旧运行结果不能改回完成", async () => {
+    let releaseFirst!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const calls: ProviderRequest[] = [];
+    const chatgpt = adapter("chatgpt", calls, async () => {
+      started();
+      await gate;
+      return { mode: "live", status: "complete", body: "FIRST_OK" };
+    });
+    let session = createGroupChatSession("取消队列", createTestClock());
+    session = append(session, "第一条", ["chatgpt"]);
+    session = append(session, "第二条", ["chatgpt"]);
+    const prepared = beginGroupChatProviderQueue(session, "chatgpt", createTestClock());
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const run = runGroupChatProviderQueue(prepared.session, "chatgpt", {
+      clock: createTestClock(), adapters: [chatgpt], timeoutMs: 1000,
+    });
+    await ready;
+    const cancelled = cancelQueuedGroupChatRequests(prepared.session, "chatgpt");
+    assert.equal(cancelled.ok, true);
+    if (!cancelled.ok) return;
+    assert.equal(cancelled.session.groupChatRequests?.find((request) => request.round === 2)?.status, "cancelled");
+    releaseFirst();
+    const finished = await run;
+    assert.equal(finished.ok, true);
+    if (!finished.ok) return;
+    const merged = mergeGroupChatExecution(cancelled.session, [finished.session]);
+    assert.equal(calls.length, 1);
+    assert.equal(merged.groupChatRequests?.find((request) => request.round === 2)?.status, "cancelled");
+    assert.equal(merged.messages.some((message) => message.body === "第二条" && message.requestId), false);
+  });
+
+  it("群聊未知结果在记录、界面标题和导出中都保持未知，真正失败仍是失败", async () => {
+    const unknown = adapter("chatgpt", [], async () => ({
+      mode: "live", status: "failed", body: "", error: { code: "connection_lost", message: "连接已断开" },
+    }));
+    let session = createGroupChatSession("未知与失败", createTestClock());
+    session = append(session, "未知探针", ["chatgpt"]);
+    const unknownRun = await runGroupChatProviderQueue(session, "chatgpt", {
+      clock: createTestClock(), adapters: [unknown], timeoutMs: 1000,
+    });
+    assert.equal(unknownRun.ok, true);
+    if (!unknownRun.ok) return;
+    const unknownMessage = unknownRun.session.messages.find((message) => message.requestId);
+    assert.equal(unknownMessage?.status, "unknown");
+    assert.equal(unknownMessage ? outcomeHeadline(unknownMessage) : "", "未知");
+    assert.equal(unknownRun.session.groupChatRequests?.[0]?.status, "unknown");
+    const unknownExport = exportSession(unknownRun.session);
+    assert.match(unknownExport.markdown, /未知/);
+    const unknownParsed = parseSessionJsonl(unknownExport.jsonl);
+    assert.equal(unknownParsed.ok, true);
+    if (unknownParsed.ok) assert.equal(unknownParsed.session.messages.find((message) => message.requestId)?.status, "unknown");
+
+    const failed = adapter("gemini", [], async () => ({
+      mode: "live", status: "failed", body: "", error: { code: "adapter_error", message: "页面失败" },
+    }));
+    let failedSession = createGroupChatSession("真正失败", createTestClock());
+    failedSession = append(failedSession, "失败探针", ["gemini"]);
+    const failedRun = await runGroupChatProviderQueue(failedSession, "gemini", {
+      clock: createTestClock(), adapters: [failed], timeoutMs: 1000,
+    });
+    assert.equal(failedRun.ok, true);
+    if (failedRun.ok) {
+      const failedMessage = failedRun.session.messages.find((message) => message.requestId);
+      assert.equal(failedMessage?.status, "failed");
+      assert.equal(failedMessage ? outcomeHeadline(failedMessage) : "", "失败");
+    }
+  });
+
   it("没有点名只留本地，双点名使用同一发送快照且不互相注入本轮新答", async () => {
     const calls: ProviderRequest[] = [];
     const chatgpt = adapter("chatgpt", calls, async () => {

@@ -56,10 +56,12 @@ export { callAdapter, contractViolation, createSession, runCrossReview, runIndep
 export { appendRoundtableUserInput, createRoundtableSession, runRoundtableRound } from "./roundtable.js";
 export {
   appendGroupChatMessage,
+  beginGroupChatProviderQueue,
   cancelQueuedGroupChatRequests,
   createGroupChatSession,
   mergeGroupChatExecution,
   resumeGroupChatProvider,
+  runGroupChatProviderQueue,
   runGroupChatQueues,
 } from "./groupchat.js";
 export type { GroupChatOptions } from "./groupchat.js";

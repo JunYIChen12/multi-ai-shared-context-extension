@@ -4,11 +4,12 @@ import { createSession, runCrossReview, runIndependentRound } from "../core/orch
 import { allowsNewIndependentSession, appendRoundtableUserInput, canSelectNextRoundTarget, createRoundtableSession, runRoundtableRound } from "../core/roundtable.js";
 import {
   appendGroupChatMessage,
+  beginGroupChatProviderQueue,
   cancelQueuedGroupChatRequests,
   createGroupChatSession,
   mergeGroupChatExecution,
   resumeGroupChatProvider,
-  runGroupChatQueues,
+  runGroupChatProviderQueue,
 } from "../core/groupchat.js";
 import { exportSession, parseSessionFile } from "../core/persist.js";
 import { mockAdapter, unimplementedAdapter } from "../core/providers.js";
@@ -46,7 +47,7 @@ const roundtableTarget = document.querySelector("#roundtable-target");
 let roundtableController: AbortController | null = null;
 let roundtableBusy = false;
 const groupChatPrompt = document.querySelector("#groupchat-prompt");
-let groupChatBusy = false;
+const groupChatBusyProviders = new Set<"chatgpt" | "gemini">();
 
 form?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -216,7 +217,7 @@ async function sendGroupChatMessage(): Promise<void> {
   session = added.session;
   if (groupChatPrompt instanceof HTMLTextAreaElement) groupChatPrompt.value = "";
   render();
-  if (!groupChatBusy) await drainGroupChatQueues();
+  await Promise.all(targets.map((providerId) => drainGroupChatProvider(providerId)));
 }
 
 async function resumeGroupChat(providerId: "chatgpt" | "gemini"): Promise<void> {
@@ -228,26 +229,36 @@ async function resumeGroupChat(providerId: "chatgpt" | "gemini"): Promise<void> 
   }
   session = resumed.session;
   render();
-  if (!groupChatBusy) await drainGroupChatQueues();
+  await drainGroupChatProvider(providerId);
 }
 
-async function drainGroupChatQueues(): Promise<void> {
-  if (groupChatBusy || !session || !isGroupChatSession(session)) return;
-  if (!hasRunnableGroupChatRequests(session)) return;
-  groupChatBusy = true;
+async function drainGroupChatProvider(providerId: "chatgpt" | "gemini"): Promise<void> {
+  if (groupChatBusyProviders.has(providerId) || !session || !isGroupChatSession(session)) return;
+  if (session.messages.some((message) => message.trust !== "created_by_core")) return;
+  if (!hasRunnableGroupChatRequests(session, providerId)) return;
+  const started = beginGroupChatProviderQueue(session, providerId);
+  if (!started.ok) {
+    showError(started.detail);
+    return;
+  }
+  session = started.session;
+  groupChatBusyProviders.add(providerId);
   renderGroupChatControls();
-  const snapshot = session;
+  const snapshot = started.session;
   try {
-    const result = await runGroupChatQueues(snapshot, groupChatOptions());
-    // Keep messages added while a provider was awaiting its page response.
-    if (!result.ok) showError(result.detail);
-    session = mergeGroupChatExecution(session ?? snapshot, [result.session ?? snapshot]);
+    const result = await runGroupChatProviderQueue(snapshot, providerId, groupChatOptions());
+    if (!result.ok) {
+      showError(result.detail);
+      return;
+    }
+    // Merge only this provider's completed request; the other provider may still be running.
+    session = mergeGroupChatExecution(session ?? snapshot, [result.session], [providerId]);
     render();
   } finally {
-    groupChatBusy = false;
+    groupChatBusyProviders.delete(providerId);
     renderGroupChatControls();
   }
-  if (hasRunnableGroupChatRequests(session)) await drainGroupChatQueues();
+  if (hasRunnableGroupChatRequests(session, providerId)) await drainGroupChatProvider(providerId);
 }
 
 function groupChatOptions() {
@@ -275,10 +286,11 @@ function selectedGroupChatTargets(): ("chatgpt" | "gemini")[] {
   return targets;
 }
 
-function hasRunnableGroupChatRequests(current: Session | null): boolean {
+function hasRunnableGroupChatRequests(current: Session | null, providerId?: "chatgpt" | "gemini"): boolean {
   if (!current?.groupChatRequests) return false;
   const paused = new Set(current.groupChatPausedProviders ?? []);
-  return current.groupChatRequests.some((request) => request.status === "queued" && !paused.has(request.providerId));
+  return current.groupChatRequests.some((request) => request.status === "queued" &&
+    (!providerId || request.providerId === providerId) && !paused.has(request.providerId));
 }
 
 async function beginRoundtable(): Promise<void> {
@@ -470,25 +482,33 @@ function renderRoundtableControls(): void {
 function renderGroupChatControls(): void {
   const current = session;
   const isGroupChat = current !== null && isGroupChatSession(current);
+  const unverified = current?.messages.some((message) => message.trust !== "created_by_core") ?? false;
   const status = document.querySelector("#groupchat-status");
   const send = document.querySelector<HTMLButtonElement>("#groupchat-send");
   const cancel = document.querySelector<HTMLButtonElement>("#groupchat-cancel");
   const paused = new Set(current?.groupChatPausedProviders ?? []);
-  if (send) send.disabled = current !== null && !isGroupChat;
-  if (cancel) cancel.disabled = !isGroupChat || groupChatBusy || !(current?.groupChatRequests ?? []).some((request) => request.status === "queued");
+  if (send) send.disabled = current !== null && (!isGroupChat || unverified);
+  if (cancel) cancel.disabled = !isGroupChat || unverified || !(current?.groupChatRequests ?? []).some((request) => request.status === "queued");
   for (const providerId of ["chatgpt", "gemini"] as const) {
     const button = document.querySelector<HTMLButtonElement>(`#groupchat-resume-${providerId}`);
-    if (button) button.disabled = !isGroupChat || groupChatBusy || !paused.has(providerId);
+    if (button) button.disabled = !isGroupChat || unverified || groupChatBusyProviders.has(providerId) || !paused.has(providerId);
   }
   if (!status) return;
   if (!isGroupChat) {
     status.textContent = current ? "当前讨论页已有其他模式记录；请导出并重新打开后再开始群聊。" : "群聊尚未开始。";
     return;
   }
+  if (unverified) {
+    status.textContent = "这是导入的未验证记录；群聊队列不会自动续发。";
+    return;
+  }
   const requests = current.groupChatRequests ?? [];
   const queued = requests.filter((request) => request.status === "queued").length;
   const failed = requests.filter((request) => request.status === "failed" || request.status === "unknown").length;
-  if (groupChatBusy) status.textContent = "群聊请求处理中；新消息会按各家队列等待。";
+  if (groupChatBusyProviders.size > 0) {
+    const busy = [...groupChatBusyProviders].map(providerName).join("、");
+    status.textContent = `${busy} 正在处理；另一家队列不会被阻塞。`;
+  }
   else if (failed > 0) status.textContent = `有 ${failed} 条失败或未知结果；对应模型已暂停，不会自动重发。`;
   else if (queued > 0) status.textContent = `还有 ${queued} 条请求排队。`;
   else status.textContent = "群聊已暂停，等待下一条消息或用户恢复队列。";

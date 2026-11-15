@@ -97,17 +97,70 @@ export async function runGroupChatQueues(session: Session, options: GroupChatOpt
   if (hasUnverifiedMessages(session)) {
     return failure(session, "unverified_session", "导入记录未验证，不能继续群聊发送。");
   }
-  const queuedProviders = uniqueGroupProviders(
-    (session.groupChatRequests ?? [])
-      .filter((request) => request.status === "queued")
-      .map((request) => request.providerId),
-  ).filter((providerId) => !(session.groupChatPausedProviders ?? []).includes(providerId));
-  if (queuedProviders.length === 0) return { ok: true, session: cloneSession(session) };
+  let current = cloneSession(session);
+  while (true) {
+    const providers = runnableGroupProviders(current);
+    if (providers.length === 0) return { ok: true, session: current };
+    const prepared = providers.map((providerId) => beginGroupChatProviderQueue(current, providerId, options.clock));
+    const runs = await Promise.all(providers.map((providerId, index) => {
+      const started = prepared[index];
+      return started?.ok
+        ? runGroupChatProviderQueue(started.session, providerId, options)
+        : Promise.resolve(started ?? failure(current, "invalid_prompt", "群聊队列准备失败。"));
+    }));
+    const successful: Session[] = [];
+    for (const run of runs) {
+      if (!run.ok) return run;
+      successful.push(run.session);
+    }
+    current = mergeGroupChatExecution(current, successful, providers);
+  }
+}
 
-  const runs = await Promise.all(queuedProviders.map((providerId) =>
-    runProviderQueue(session, providerId, options),
-  ));
-  return { ok: true, session: mergeGroupChatExecution(session, runs) };
+/** Mark only the next queued request as sending so later queued requests stay cancellable. */
+export function beginGroupChatProviderQueue(
+  session: Session,
+  providerId: ProviderId,
+  clock: Clock = systemClock(),
+): StepResult {
+  if (hasUnverifiedMessages(session)) {
+    return failure(session, "unverified_session", "导入记录未验证，不能继续群聊发送。");
+  }
+  if (!isGroupProvider(providerId)) return failure(session, "invalid_prompt", "群聊只支持 ChatGPT 或 Gemini。");
+  const next = cloneSession(session);
+  const request = next.groupChatRequests?.find((item) => item.providerId === providerId && item.status === "queued");
+  if (request) {
+    request.status = "sending";
+    request.updatedAt = clock.now();
+    next.updatedAt = request.updatedAt;
+  }
+  return { ok: true, session: next };
+}
+
+/** Execute one request for one provider. The caller may start the next one after merging this result. */
+export async function runGroupChatProviderQueue(
+  session: Session,
+  providerId: ProviderId,
+  options: GroupChatOptions,
+): Promise<StepResult> {
+  if (hasUnverifiedMessages(session)) {
+    return failure(session, "unverified_session", "导入记录未验证，不能继续群聊发送。");
+  }
+  if (!isGroupProvider(providerId)) return failure(session, "invalid_prompt", "群聊只支持 ChatGPT 或 Gemini。");
+  const next = cloneSession(session);
+  if ((next.groupChatPausedProviders ?? []).includes(providerId) &&
+      !(next.groupChatRequests ?? []).some((item) => item.providerId === providerId && item.status === "sending")) {
+    return { ok: true, session: next };
+  }
+  const request = next.groupChatRequests?.find((item) => item.providerId === providerId &&
+    (item.status === "sending" || item.status === "queued"));
+  if (!request) return { ok: true, session: next };
+  if (request.status === "queued") {
+    request.status = "sending";
+    request.updatedAt = options.clock.now();
+  }
+  await runProviderRequest(next, providerId, request, options);
+  return { ok: true, session: next };
 }
 
 export function resumeGroupChatProvider(session: Session, providerId: ProviderId): StepResult {
@@ -131,7 +184,11 @@ export function cancelQueuedGroupChatRequests(session: Session, providerId?: Pro
   return { ok: true, session: next };
 }
 
-export function mergeGroupChatExecution(current: Session, executed: readonly Session[]): Session {
+export function mergeGroupChatExecution(
+  current: Session,
+  executed: readonly Session[],
+  executedProviders?: readonly ProviderId[],
+): Session {
   const merged = cloneSession(current);
   const messageByRequestId = new Map(
     merged.messages
@@ -139,20 +196,41 @@ export function mergeGroupChatExecution(current: Session, executed: readonly Ses
       .map((message) => [message.requestId as string, message]),
   );
   const requestById = new Map((merged.groupChatRequests ?? []).map((request) => [request.id, request]));
+  const cancelledRequestIds = new Set(
+    (merged.groupChatRequests ?? []).filter((request) => request.status === "cancelled").map((request) => request.id),
+  );
+  const cancelledMessageIds = new Set(
+    (merged.groupChatRequests ?? [])
+      .filter((request) => cancelledRequestIds.has(request.id))
+      .map((request) => request.messageId),
+  );
+  const providerScope = executedProviders ? new Set(executedProviders) : null;
   const receiptByKey = new Map((merged.deliveryReceipts ?? []).map((receipt) => [receiptKey(receipt), receipt]));
   const paused = new Set(merged.groupChatPausedProviders ?? []);
   for (const run of executed) {
+    const runRequests = new Map((run.groupChatRequests ?? []).map((request) => [request.id, request]));
     for (const message of run.messages) {
       if (!message.requestId) continue;
+      const request = runRequests.get(message.requestId);
+      if (providerScope && (!request || !providerScope.has(request.providerId))) continue;
+      if (cancelledRequestIds.has(message.requestId)) continue;
       messageByRequestId.set(message.requestId, cloneMessage(message));
     }
     for (const request of run.groupChatRequests ?? []) {
+      if (providerScope && !providerScope.has(request.providerId)) continue;
       // Each provider run carries the other provider's untouched queued requests.
       // Only merge requests that this run actually advanced.
-      if (request.status !== "queued") requestById.set(request.id, cloneRequest(request));
+      if (request.status !== "queued" && !cancelledRequestIds.has(request.id)) {
+        requestById.set(request.id, cloneRequest(request));
+      }
     }
-    for (const receipt of run.deliveryReceipts ?? []) receiptByKey.set(receiptKey(receipt), { ...receipt });
-    for (const providerId of run.groupChatPausedProviders ?? []) paused.add(providerId);
+    for (const receipt of run.deliveryReceipts ?? []) {
+      if (providerScope && !providerScope.has(receipt.providerId)) continue;
+      if (!cancelledMessageIds.has(receipt.messageId)) receiptByKey.set(receiptKey(receipt), { ...receipt });
+    }
+    for (const providerId of run.groupChatPausedProviders ?? []) {
+      if (!providerScope || providerScope.has(providerId)) paused.add(providerId);
+    }
   }
   const existingMessages = merged.messages.filter((message) => !message.requestId);
   merged.messages = [...existingMessages, ...messageByRequestId.values()]
@@ -172,68 +250,69 @@ export interface GroupChatOptions {
   signal?: AbortSignal;
 }
 
-async function runProviderQueue(session: Session, providerId: ProviderId, options: GroupChatOptions): Promise<Session> {
-  const next = cloneSession(session);
-  const requests = (next.groupChatRequests ?? []).filter((request) =>
-    request.providerId === providerId && request.status === "queued",
-  );
-  for (const request of requests) {
-    if (options.signal?.aborted) {
-      cancelQueuedInPlace(next, providerId, options.clock.now());
-      break;
-    }
-    request.status = "sending";
-    request.updatedAt = options.clock.now();
-    const userMessage = next.messages.find((message) => message.id === request.messageId);
-    const delivered = new Set(
-      (next.deliveryReceipts ?? [])
-        .filter((receipt) => receipt.providerId === providerId)
-        .map((receipt) => receipt.messageId),
-    );
-    const contextMessageIds = request.contextMessageIds.filter((id) => !delivered.has(id));
-    const context = contextMessageIds.map((id) => next.messages.find((message) => message.id === id));
-    if (!userMessage || context.some((message) => !message || message.status !== "complete" || !message.body.trim())) {
-      const now = options.clock.now();
-      const response = unknownResult(next, providerId, request, now);
-      next.messages.push(response);
-      finishRequest(request, "unknown", now, response.errorCode, response.errorMessage);
-      pauseProvider(next, providerId);
-      break;
-    }
-    const meetingContext = context.map((message) => toMeetingContext(message!));
-    const response = await callAdapter(
-      next,
-      providerId,
-      "groupchat",
-      request.round,
-      userMessage.body,
-      [],
-      {
-        ...options,
-        adapters: options.adapters,
-      },
-      meetingContext,
-    );
-    // A response belongs to the request, not to a provider-wide mutable slot.
-    response.id = request.id;
-    response.requestId = request.id;
-    response.shared = response.status === "complete" && response.sourceKind === "provider";
-    next.messages.push(response);
-    const attemptedIds = [request.messageId, ...contextMessageIds];
-    if (response.status === "complete") {
-      finishRequest(request, "complete", options.clock.now(), null, null);
-      addReceipts(next, providerId, attemptedIds, "confirmed");
-      touch(next, options.clock);
-      continue;
-    }
-    const state = isUnknown(response) ? "unknown" : response.status === "cancelled" ? "cancelled" : "failed";
-    finishRequest(request, state, options.clock.now(), response.errorCode, response.errorMessage);
-    addReceipts(next, providerId, attemptedIds, state === "unknown" ? "unknown" : "failed");
+async function runProviderRequest(
+  next: Session,
+  providerId: ProviderId,
+  request: GroupChatRequest,
+  options: GroupChatOptions,
+): Promise<void> {
+  if (options.signal?.aborted) {
+    finishRequest(request, "cancelled", options.clock.now(), "cancelled", "用户取消了尚未执行的群聊请求。");
     touch(next, options.clock);
-    if (state !== "cancelled") pauseProvider(next, providerId);
-    break;
+    return;
   }
-  return next;
+  const userMessage = next.messages.find((message) => message.id === request.messageId);
+  const delivered = new Set(
+    (next.deliveryReceipts ?? [])
+      .filter((receipt) => receipt.providerId === providerId)
+      .map((receipt) => receipt.messageId),
+  );
+  const contextMessageIds = request.contextMessageIds.filter((id) => !delivered.has(id));
+  const context = contextMessageIds.map((id) => next.messages.find((message) => message.id === id));
+  if (!userMessage || context.some((message) => !message || message.status !== "complete" || !message.body.trim())) {
+    const now = options.clock.now();
+    const response = unknownResult(next, providerId, request, now);
+    next.messages.push(response);
+    finishRequest(request, "unknown", now, response.errorCode, response.errorMessage);
+    pauseProvider(next, providerId);
+    return;
+  }
+  const meetingContext = context.map((message) => toMeetingContext(message!));
+  const response = await callAdapter(
+    next,
+    providerId,
+    "groupchat",
+    request.round,
+    userMessage.body,
+    [],
+    { ...options, adapters: options.adapters },
+    meetingContext,
+  );
+  const unknown = isUnknown(response);
+  if (unknown) {
+    response.status = "unknown";
+    response.body = "";
+    response.role = "system";
+    response.sourceKind = "system";
+    response.shared = false;
+  }
+  // A response belongs to the request, not to a provider-wide mutable slot.
+  response.id = request.id;
+  response.requestId = request.id;
+  response.shared = response.status === "complete" && response.sourceKind === "provider";
+  next.messages.push(response);
+  const attemptedIds = [request.messageId, ...contextMessageIds];
+  if (response.status === "complete") {
+    finishRequest(request, "complete", options.clock.now(), null, null);
+    addReceipts(next, providerId, attemptedIds, "confirmed");
+    touch(next, options.clock);
+    return;
+  }
+  const state = unknown ? "unknown" : response.status === "cancelled" ? "cancelled" : "failed";
+  finishRequest(request, state, options.clock.now(), response.errorCode, response.errorMessage);
+  addReceipts(next, providerId, attemptedIds, state === "unknown" ? "unknown" : "failed");
+  touch(next, options.clock);
+  if (state !== "cancelled") pauseProvider(next, providerId);
 }
 
 function selectContextMessageIds(session: Session, target: ProviderId): string[] {
@@ -291,15 +370,6 @@ function finishRequest(
   request.errorMessage = errorMessage;
 }
 
-function cancelQueuedInPlace(session: Session, providerId: ProviderId, now: string): void {
-  for (const request of session.groupChatRequests ?? []) {
-    if (request.providerId === providerId && request.status === "queued") {
-      finishRequest(request, "cancelled", now, "cancelled", "用户取消了尚未执行的群聊请求。" );
-    }
-  }
-  touch(session, { now: () => now, id: () => "cancelled" });
-}
-
 function pauseProvider(session: Session, providerId: ProviderId): void {
   const paused = session.groupChatPausedProviders ?? [];
   if (!paused.includes(providerId)) paused.push(providerId);
@@ -307,7 +377,7 @@ function pauseProvider(session: Session, providerId: ProviderId): void {
 }
 
 function isUnknown(message: SessionMessage): boolean {
-  return message.status === "timeout" || message.errorCode === "unknown" ||
+  return message.status === "unknown" || message.status === "timeout" || message.errorCode === "unknown" ||
     message.errorCode === "connection_lost" || message.errorCode === "page_error" ||
     message.errorCode === "ambiguous_turn";
 }
@@ -323,7 +393,7 @@ function unknownResult(session: Session, providerId: ProviderId, request: GroupC
     phase: "groupchat",
     body: "",
     createdAt: now,
-    status: "failed",
+    status: "unknown",
     sourceKind: "system",
     adapterMode: "none",
     provenance: [],
@@ -336,6 +406,15 @@ function unknownResult(session: Session, providerId: ProviderId, request: GroupC
 
 function uniqueGroupProviders(values: readonly ProviderId[]): ProviderId[] {
   return [...new Set(values)].filter(isGroupProvider);
+}
+
+function runnableGroupProviders(session: Session): ProviderId[] {
+  const paused = new Set(session.groupChatPausedProviders ?? []);
+  return uniqueGroupProviders(
+    (session.groupChatRequests ?? [])
+      .filter((request) => (request.status === "queued" || request.status === "sending") && !paused.has(request.providerId))
+      .map((request) => request.providerId),
+  );
 }
 
 function isGroupProvider(value: ProviderId): value is "chatgpt" | "gemini" {

@@ -24,6 +24,7 @@ export type TurnPhase = "independent" | "cross_review" | "roundtable" | "groupch
 export type MessageStatus =
   | "complete"
   | "failed"
+  | "unknown"
   | "timeout"
   | "not_connected"
   | "cancelled";
